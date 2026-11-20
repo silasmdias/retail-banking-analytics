@@ -18,7 +18,7 @@ You need [uv](https://docs.astral.sh/uv/) and `make`. uv installs the right Pyth
 make build
 ```
 
-That one command installs the pinned dependencies, generates the source files, loads them into a local DuckDB file and runs `dbt build`: 24 models, 148 data tests and 6 unit tests. It takes about half a minute on a laptop and needs no account or credential.
+That one command installs the pinned dependencies, generates the source files, loads them into a local DuckDB file and runs `dbt build`: 24 models, 145 data tests and 8 unit tests. Once the dependencies are downloaded it takes about 15 seconds on a laptop, and it needs no account or credential.
 
 To look at the results:
 
@@ -41,10 +41,10 @@ Revenue in 2025 by product:
 
 | Product | Net interest income | Fees | Interchange | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Personal Loan | 600,745 | 146,906 | 0 | 747,651 |
-| Cashback Credit Card | 287,244 | 19,480 | 201,784 | 508,508 |
+| Personal Loan | 600,753 | 146,816 | 0 | 747,569 |
+| Classic Credit Card | 287,247 | 19,480 | 201,787 | 508,514 |
 | Everyday Checking | 176,966 | 79,517 | 33,429 | 289,912 |
-| Premium Rewards Credit Card | 46,595 | 14,260 | 64,700 | 125,555 |
+| Premium Credit Card | 46,598 | 14,260 | 64,706 | 125,564 |
 | High-Yield Savings | 53,835 | 0 | 0 | 53,835 |
 
 Revenue is attributed to the channel that sold the account. Interest and monthly fees have no transaction channel, so attributing by the channel of each transaction would leave most revenue unassigned.
@@ -53,17 +53,17 @@ Revenue is attributed to the channel that sold the account. Interest and monthly
 
 `customer_lifetime_value` has one row per acquisition cohort (month) and acquisition channel. It compares the 60-month lifetime value of a customer with what it cost to acquire them.
 
-All cohorts together, by acquisition channel:
+All cohorts together, by acquisition channel (rounded to whole dollars, so the two parts can differ from the total by one):
 
 | Channel | Customers | CAC | Realized CLV | Projected CLV | CLV (60 months) | CLV to CAC |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Branch | 1,274 | 320 | 631 | 1,112 | 1,743 | 5.4 |
-| Online | 983 | 149 | 436 | 814 | 1,250 | 8.4 |
-| Mobile app | 1,697 | 112 | 255 | 683 | 938 | 8.4 |
-| Partner | 673 | 195 | 352 | 278 | 629 | 3.2 |
-| Call center | 333 | 223 | 350 | 114 | 464 | 2.1 |
+| Branch | 1,274 | 320 | 621 | 863 | 1,484 | 4.6 |
+| Online | 983 | 149 | 421 | 658 | 1,079 | 7.2 |
+| Mobile app | 1,697 | 112 | 236 | 610 | 847 | 7.5 |
+| Partner | 673 | 195 | 331 | 439 | 771 | 3.9 |
+| Call center | 333 | 223 | 285 | 428 | 714 | 3.2 |
 
-Branch customers are worth the most and cost the most to acquire. Mobile and online customers are worth less each but pay back their acquisition cost faster. The call center brings in the fewest customers at the weakest return.
+Branch customers are worth the most and cost the most to acquire. Mobile and online customers are worth less each but return more per dollar spent to acquire them, and their cohorts pay back sooner: a median of 7 months, against 10.5 for branch. Partner and call center have the lowest ratios.
 
 `customer_lifetime_value_curve` holds the month-by-month curve behind each row, for charting how value builds up with age and for comparing cohorts at the same age.
 
@@ -75,13 +75,13 @@ Branch customers are worth the most and cost the most to acquire. Mobile and onl
 
 | Product | Budget | Actual | Variance | Variance % |
 | --- | ---: | ---: | ---: | ---: |
-| Cashback Credit Card | 569,156 | 508,508 | -60,648 | -10.7% |
-| Everyday Checking | 321,281 | 289,912 | -31,369 | -9.8% |
-| Personal Loan | 825,541 | 747,651 | -77,890 | -9.4% |
-| Premium Rewards Credit Card | 116,347 | 125,555 | 9,208 | 7.9% |
+| Classic Credit Card | 570,135 | 508,514 | -61,621 | -10.8% |
+| Everyday Checking | 321,423 | 289,912 | -31,511 | -9.8% |
+| Personal Loan | 825,450 | 747,569 | -77,881 | -9.4% |
+| Premium Credit Card | 116,604 | 125,564 | 8,960 | 7.7% |
 | High-Yield Savings | 49,456 | 53,835 | 4,379 | 8.9% |
 
-Each line is also classified as on plan (within 5% of budget), above plan, below plan, unbudgeted or without actuals.
+Each line is also classified as on plan (within 5% of budget), above plan, below plan, unbudgeted or without actuals. A line keeps a row in months when it has neither budget nor revenue, so the year-to-date columns can be summed across lines for any month.
 
 ## How it works
 
@@ -129,9 +129,10 @@ Contribution margin is revenue minus credit losses minus cost to serve. Revenue 
 For each cohort and acquisition channel:
 
 1. Months the cohort has already lived use its actual margin.
-2. The remaining months, up to month 60, are projected as customers still active times margin per active customer. Both come from what older cohorts of the same channel showed at the same age. Beyond 24 months too few cohorts are old enough to give stable numbers by age, so those ages share one pooled retention rate and one pooled margin.
-3. Each month is discounted at 10% a year back to the acquisition month.
-4. The total is divided by the customers acquired, so churn lowers the value.
+2. The remaining months, up to month 60, are projected as customers still active times margin per active customer. Both come from what older cohorts showed at the same age. Beyond 24 months too few cohorts are old enough to give stable numbers by age, so those ages share one pooled retention rate and one pooled margin.
+3. A channel's own history is blended with the history of all channels, in proportion to how much history the channel has. Credit losses get a much heavier blend than retention and margin before losses, because charge-offs are rare and large. Without it, the two defaults in the 271 customer-months the call center has beyond two years would project a negative margin for every call center cohort.
+4. Each month is discounted at 10% a year back to the acquisition month.
+5. The total is divided by the customers acquired, so churn lowers the value.
 
 Acquisition cost is kept out of CLV and reported next to it, with the CLV to CAC ratio and the payback month.
 
@@ -139,8 +140,11 @@ Limits worth knowing before using the number:
 
 - With three years of history no cohort has lived months 37 to 60, so that part of every curve is an assumption. `is_projected` and `projected_clv` keep it apart from what was observed.
 - The projection ignores calendar effects such as a change in interest rates.
+- Projected credit losses lean on all channels together, so the projected part understates differences in credit risk between channels. The realized part carries each channel's actual losses.
 - Margin excludes cost of capital, taxes and fixed overhead, which is one reason the CLV to CAC ratios look high.
-- Horizon, discount rate and the 24-month cutoff are dbt variables in `transform/dbt_project.yml`.
+- Fees count in the month they are charged, including loan origination fees. Accrual accounting would spread an origination fee over the life of the loan, so first-month margin is higher here and payback is shorter.
+- The fictional cards have no rewards program, so interchange has no rewards cost against it.
+- Horizon, discount rate, the 24-month cutoff and the two blending constants are dbt variables in `transform/dbt_project.yml`.
 
 ## Data quality
 
@@ -148,7 +152,7 @@ The generator injects the problems below and counts each one. The counts are for
 
 | Problem in the source | Records | What the pipeline does |
 | --- | ---: | --- |
-| Channel spelled inconsistently ("Mobile App", "BR", "point of sale") | 47,100 | Mapped to a standard value through a seed |
+| Channel spelled inconsistently ("Mobile App", "BR", "point of sale") | 47,101 | Mapped to a standard value through a seed |
 | Transaction date in US format (03/17/2024) | 11,687 | Parsed in staging |
 | Transaction delivered twice | 4,733 | Deduplicated in staging |
 | Amount sent with a minus sign | 2,351 | Sign dropped in staging |
@@ -173,13 +177,13 @@ Rejected records are kept, each with its reason, and summarized in `dq_rejected_
 
 Tests are placed by layer.
 
-- On the sources, tests run with `severity: warn`. They measure the known problems (duplicates, missing amounts, broken references) without stopping the build.
+- On the sources, the eight tests that measure the known problems (duplicates, missing amounts, broken references) run with `severity: warn`, so they report a count without stopping the build. The other source tests fail it.
 - On staging, intermediate and marts, tests fail the build: keys, relationships, accepted values, and a check that no channel label is left unmapped.
 - Seven singular tests reconcile models with each other, for example that revenue by product and channel equals the account-level fact every month, and that every account has a balance row for each month it was open.
-- Six unit tests cover the logic most likely to break: date and sign cleaning, the order of the rejection rules, which fees count as revenue, net interest income for assets and liabilities, budget variance statuses, and the lifetime value projection.
+- Eight unit tests cover the logic most likely to break: date and sign cleaning, the order of the rejection rules, which fees count as revenue, net interest income for assets and liabilities, budget variance statuses and year-to-date carry-forward, and three scenarios of the lifetime value projection.
 - The four finance marts have enforced contracts, so a changed column name or type fails the build.
 
-The tests were checked against broken data. A copy of the dataset was damaged in four ways: a channel label missing from the mapping, a monthly balance file that never arrived, a month without a funds transfer rate and a repeated budget line. Each one failed the build at the expected test.
+The tests were checked against broken data. A copy of the dataset was damaged in five ways: a channel label missing from the mapping, a monthly balance file missing from the middle of the history, the latest balance file missing, a month without a funds transfer rate and a repeated budget line. Each one failed the build at the expected test.
 
 A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the linter, the generator tests and the full build on every push and pull request.
 
@@ -187,7 +191,7 @@ A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the linter, the gene
 
 DuckDB keeps the project free to run and easy to clone: the warehouse is one local file and there is nothing to sign up for. The sources are ordinary tables in raw schemas, as they would be in a cloud warehouse.
 
-The generator is deterministic. The same seed always produces the same files, and extending the end month adds new files without changing the months already generated. That makes results reproducible and lets a scheduled run load one new month at a time.
+The generator is deterministic. The same seed always produces the same files. Extending the end month adds new monthly files and leaves the earlier ones as they were; only the customer and account snapshots are replaced, as snapshots are. That makes results reproducible and lets a scheduled run load one new month at a time.
 
 Reference data that changes rarely and is maintained by hand lives in dbt seeds: the channel mapping and the unit costs used for cost to serve.
 

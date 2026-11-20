@@ -1,0 +1,9 @@
+# Local DuckDB file. No credentials are involved, so this profile is safe to commit.
+retail_banking:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('WAREHOUSE_PATH', '../data/warehouse.duckdb') }}"
+      schema: main
+      threads: 4

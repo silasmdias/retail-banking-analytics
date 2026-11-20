@@ -1,0 +1,307 @@
+version: 2
+
+models:
+  - name: stg_core_banking__customers
+    description: >
+      One row per customer, typed and cleaned. Repeated snapshot rows are
+      removed, segment labels are standardized and channel spellings are mapped
+      to their standard value. Internal test customers are still present here
+      and are removed in `dim_customers`.
+    columns:
+      - name: customer_id
+        description: Customer identifier assigned by the core banking system.
+        data_tests:
+          - unique
+          - not_null
+      - name: signup_date
+        description: Date the customer opened their first account.
+        data_tests:
+          - not_null
+      - name: segment
+        description: >
+          Commercial segment in snake_case. `unassigned` when the source sends no segment.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [mass_market, emerging_affluent, affluent, unassigned]
+      - name: region
+        description: Region where the customer lives.
+      - name: birth_year
+        description: Year of birth. The source carries no full birth date.
+      - name: risk_band
+        description: Credit risk band at onboarding, from `A` (lowest risk) to `E` (highest).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [A, B, C, D, E]
+      - name: acquisition_channel
+        description: >
+          Sales channel that brought the customer in, mapped through
+          `channel_mapping`. Null would mean a spelling missing from the mapping.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [branch, mobile_app, online, call_center, partner]
+      - name: is_internal_test
+        description: True for customers created by bank staff to test systems.
+      - name: _loaded_at
+        description: When the row was loaded into the raw schema.
+
+  - name: stg_core_banking__accounts
+    description: >
+      One row per account (a product contract held by a customer), typed, with
+      the sales channel mapped to its standard value.
+    columns:
+      - name: account_id
+        description: Account identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Owner of the account.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_core_banking__customers')
+                field: customer_id
+      - name: product_id
+        description: Product contracted.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_core_banking__products')
+                field: product_id
+      - name: opened_date
+        description: Date the account was opened.
+        data_tests:
+          - not_null
+      - name: closed_date
+        description: >
+          Date the account was closed, charged off or repaid in full. Null while the account is open.
+      - name: account_status
+        description: >
+          `open`, `closed` (closed by the customer or repaid) or `charged_off`
+          (written off after default).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [open, closed, charged_off]
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [branch, mobile_app, online, call_center, partner]
+      - name: annual_interest_rate
+        description: >
+          Contract rate as a decimal: charged on loans and revolving card
+          balances, paid on savings. Fixed when the account opens. Zero for checking.
+      - name: credit_limit
+        description: Credit limit in US dollars. Only credit cards have one.
+      - name: original_principal
+        description: Amount lent at origination, in US dollars. Only personal loans have one.
+      - name: term_months
+        description: Contract term in months. Only personal loans have one.
+      - name: _loaded_at
+        description: When the row was loaded into the raw schema.
+
+  - name: stg_core_banking__products
+    description: One row per product in the catalog, typed.
+    columns:
+      - name: product_id
+        description: Product identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: Commercial name of the product.
+      - name: product_category
+        description: Product family. Several products can share a category.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [checking, savings, credit_card, personal_loan]
+      - name: balance_side
+        description: >
+          `asset` when the bank lends (cards, loans) and `liability` when the
+          bank owes the balance to the customer (deposits). Decides the sign of
+          net interest income.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [asset, liability]
+      - name: interchange_rate
+        description: Share of card purchase volume earned as interchange. Zero for products without a card.
+
+  - name: stg_core_banking__transactions
+    description: >
+      One row per transaction, typed and cleaned. Repeated records are removed,
+      both date formats are parsed, the minus sign some feeds send is dropped
+      and channel spellings are mapped to their standard value. Records that
+      are unusable (missing amount, unknown account and so on) are still here;
+      `int_transactions_screened` flags them.
+    columns:
+      - name: transaction_id
+        description: Transaction identifier, unique after deduplication.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: Account as sent by the source. May not exist in the accounts table.
+      - name: transaction_date
+        description: Date the transaction happened. Null only if neither known date format matches.
+        data_tests:
+          - not_null
+      - name: posted_date
+        description: Date the transaction was posted, up to 12 days after it happened.
+        data_tests:
+          - not_null
+      - name: transaction_type
+        description: >
+          What the transaction is. `purchase` and `debit_purchase` earn
+          interchange; `charge_off` is a credit loss.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - deposit
+                  - withdrawal
+                  - debit_purchase
+                  - transfer_in
+                  - transfer_out
+                  - bill_payment
+                  - purchase
+                  - cash_advance
+                  - payment
+                  - disbursement
+                  - loan_payment
+                  - charge_off
+      - name: channel
+        description: '{{ doc("servicing_channel") }}'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [branch, atm, mobile_app, online, pos, call_center, automated]
+      - name: amount
+        description: >
+          Amount in US dollars, always positive: direction comes from
+          `transaction_type`. Null when the source sent no amount.
+      - name: _source_file
+        description: File the record arrived in, named after the posting month.
+      - name: _loaded_at
+        description: When the row was loaded into the raw schema.
+
+  - name: stg_core_banking__fees
+    description: >
+      One row per fee charged to an account, typed and cleaned. Repeated
+      records are removed and fee type labels are standardized.
+    columns:
+      - name: fee_id
+        description: Fee identifier, unique after deduplication.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: Account as sent by the source. May not exist in the accounts table.
+      - name: transaction_id
+        description: Transaction that triggered the fee, when there is one (an ATM withdrawal, a wire).
+      - name: fee_type
+        description: Kind of fee, in snake_case.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - monthly_maintenance
+                  - atm_out_of_network
+                  - overdraft
+                  - wire_transfer
+                  - late_payment
+                  - annual_fee
+                  - cash_advance_fee
+                  - loan_origination
+      - name: fee_date
+        description: Date the fee was charged.
+        data_tests:
+          - not_null
+      - name: amount
+        description: Fee amount in US dollars. Null when the source sent no amount.
+      - name: fee_status
+        description: '`posted` (kept by the bank), `waived` (never collected) or `reversed` (refunded).'
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [posted, waived, reversed]
+      - name: _source_file
+        description: File the record arrived in.
+      - name: _loaded_at
+        description: When the row was loaded into the raw schema.
+
+  - name: stg_core_banking__account_balances
+    description: >
+      One row per account and month in which the account was open at any point,
+      typed, with repeated rows removed.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - account_id
+              - balance_month
+    columns:
+      - name: account_id
+        description: Account identifier.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_core_banking__accounts')
+                field: account_id
+      - name: balance_month
+        description: First day of the month the balances refer to.
+        data_tests:
+          - not_null
+      - name: average_balance
+        description: >
+          Average daily balance over the whole calendar month, in US dollars. In
+          the month an account opens or closes it is lower because part of the
+          month has no balance.
+      - name: interest_bearing_balance
+        description: >
+          Part of the average balance that accrues interest at the account rate.
+          Equal to the average balance for deposits and loans; only the revolving
+          part for credit cards.
+      - name: _loaded_at
+        description: When the row was loaded into the raw schema.
+
+unit_tests:
+  - name: test_stg_transactions_cleans_dates_signs_channels_and_duplicates
+    description: >
+      Scenario: the feed sends a US-style date, a negative amount, a channel
+      label typed in another style and the same record twice.
+      Then the date is parsed, the amount is positive, the channel is the
+      standard value and the record appears once.
+    model: stg_core_banking__transactions
+    given:
+      - input: ref('channel_mapping')
+        rows:
+          - {raw_channel: pos, channel: pos}
+          - {raw_channel: point of sale, channel: pos}
+          - {raw_channel: atm, channel: atm}
+          - {raw_channel: branch, channel: branch}
+      - input: source('core_banking', 'transactions')
+        rows:
+          - {transaction_id: T1, account_id: A1, transaction_date: "2024-03-17", posted_date: "2024-03-18", transaction_type: purchase, channel: pos, amount: "25.00", _source_file: transactions_2024-03.csv, _loaded_at: "2024-04-01 00:00:00"}
+          - {transaction_id: T2, account_id: A1, transaction_date: "03/17/2024", posted_date: "2024-03-18", transaction_type: purchase, channel: "Point Of Sale", amount: "-40.10", _source_file: transactions_2024-03.csv, _loaded_at: "2024-04-01 00:00:00"}
+          - {transaction_id: T3, account_id: A1, transaction_date: "2024-03-20", posted_date: "2024-03-20", transaction_type: withdrawal, channel: "ATM ", amount: "60.00", _source_file: transactions_2024-03.csv, _loaded_at: "2024-04-01 00:00:00"}
+          - {transaction_id: T3, account_id: A1, transaction_date: "2024-03-20", posted_date: "2024-03-20", transaction_type: withdrawal, channel: "ATM ", amount: "60.00", _source_file: transactions_2024-03.csv, _loaded_at: "2024-04-01 00:00:00"}
+          - {transaction_id: T4, account_id: A1, transaction_date: "2024-03-21", posted_date: "2024-03-21", transaction_type: deposit, channel: branch, amount: null, _source_file: transactions_2024-03.csv, _loaded_at: "2024-04-01 00:00:00"}
+    expect:
+      rows:
+        - {transaction_id: T1, transaction_date: "2024-03-17", channel: pos, amount: 25.00}
+        - {transaction_id: T2, transaction_date: "2024-03-17", channel: pos, amount: 40.10}
+        - {transaction_id: T3, transaction_date: "2024-03-20", channel: atm, amount: 60.00}
+        - {transaction_id: T4, transaction_date: "2024-03-21", channel: branch, amount: null}

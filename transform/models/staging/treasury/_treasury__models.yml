@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_treasury__funds_transfer_rates
+    description: >
+      One row per month with the funds transfer pricing (FTP) rate, typed. A
+      month without a rate leaves net interest income null downstream, which a
+      test on `int_net_interest_by_account_month` catches.
+    columns:
+      - name: rate_month
+        description: First day of the month the rate applies to.
+        data_tests:
+          - unique
+          - not_null
+      - name: funds_transfer_rate
+        description: >
+          Annual FTP rate as a decimal (0.0440 is 4.40%). One rate for all
+          balances: charged to lending products, credited to deposits.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 0.25

@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: stg_finance__revenue_budget
+    description: >
+      One row per planned month, product and sales channel, typed, with the
+      hand-typed channel names mapped to their standard value. Pairs of product
+      and channel that finance did not plan have no row.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - budget_month
+              - product_id
+              - sales_channel
+    columns:
+      - name: budget_month
+        description: First day of the planned month.
+        data_tests:
+          - not_null
+      - name: product_id
+        description: Product the plan refers to.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_core_banking__products')
+                field: product_id
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [branch, mobile_app, online, call_center, partner]
+      - name: budget_revenue
+        description: Planned total revenue in US dollars, rounded to whole dollars by finance.
+        data_tests:
+          - not_null
+
+  - name: stg_finance__acquisition_spend
+    description: >
+      One row per month and sales channel with the sales and marketing spend to
+      acquire new customers, typed.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - spend_month
+              - sales_channel
+    columns:
+      - name: spend_month
+        description: First day of the month the spend was incurred.
+        data_tests:
+          - not_null
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [branch, mobile_app, online, call_center, partner]
+      - name: acquisition_spend
+        description: Spend in US dollars. Zero in months when the channel acquired nobody.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0

@@ -1,0 +1,152 @@
+version: 2
+
+sources:
+  - name: core_banking
+    description: >
+      Extracts from the core banking system of a fictional retail bank, loaded
+      as text into the `raw_core_banking` schema by `ingest/load_raw.py`. The
+      data is synthetic and intentionally imperfect: duplicates, inconsistent
+      labels, mixed date formats and broken references are injected on purpose.
+      Tests on these tables use `severity: warn` to measure the problems; the
+      staging and intermediate models repair or reject the affected records.
+    schema: raw_core_banking
+    tables:
+      - name: customers
+        description: >
+          Full snapshot of customers, one row per customer. Carries no name,
+          contact detail or document number. A small share of rows is delivered twice.
+        columns:
+          - name: customer_id
+            description: Customer identifier assigned by the core banking system.
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    severity: warn
+          - name: segment
+            description: >
+              Commercial segment. Arrives with inconsistent casing and spacing
+              ("Mass Market", " mass_market") and is sometimes empty.
+          - name: acquisition_channel
+            description: Sales channel that brought the customer in. Spelled inconsistently.
+          - name: is_internal_test
+            description: "`true` for accounts opened by bank staff to test systems. Not real business."
+
+      - name: accounts
+        description: >
+          Full snapshot of accounts, one row per product contract held by a
+          customer. `closed_date` and `account_status` change as accounts close.
+        columns:
+          - name: account_id
+            description: Account identifier.
+            data_tests:
+              - not_null
+              - unique
+          - name: customer_id
+            description: Owner of the account.
+            data_tests:
+              - not_null
+          - name: sales_channel
+            description: Channel through which this account was sold. Spelled inconsistently.
+
+      - name: products
+        description: Product catalog, one row per product.
+        columns:
+          - name: product_id
+            description: Product identifier.
+            data_tests:
+              - not_null
+              - unique
+
+      - name: transactions
+        description: >
+          Account transactions, delivered in one file per posting month. A
+          transaction can post up to 12 days after it happened, so a file may
+          contain records dated in the previous month.
+        columns:
+          - name: transaction_id
+            description: Transaction identifier. The feed occasionally repeats a record.
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    severity: warn
+          - name: account_id
+            description: Account the transaction belongs to. A few records point to unknown accounts.
+            data_tests:
+              - relationships:
+                  arguments:
+                    to: source('core_banking', 'accounts')
+                    field: account_id
+                  config:
+                    severity: warn
+          - name: transaction_date
+            description: Date of the transaction, as ISO (2024-03-17) or US style (03/17/2024).
+          - name: posted_date
+            description: Date the transaction was posted to the account. Defines the file it arrives in.
+          - name: channel
+            description: Servicing channel used for the transaction. Spelled inconsistently.
+          - name: amount
+            description: >
+              Transaction amount in US dollars. Direction is implied by
+              `transaction_type`; part of the feed also sends a minus sign.
+              Sometimes empty, sometimes implausibly large.
+            data_tests:
+              - not_null:
+                  config:
+                    severity: warn
+
+      - name: fees
+        description: >
+          Fees charged to accounts, one row per fee. `fee_status` tells whether
+          the fee was kept (`posted`), never collected (`waived`) or refunded
+          (`reversed`).
+        columns:
+          - name: fee_id
+            description: Fee identifier. The feed occasionally repeats a record.
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    severity: warn
+          - name: account_id
+            description: Account that was charged. A few records point to unknown accounts.
+            data_tests:
+              - relationships:
+                  arguments:
+                    to: source('core_banking', 'accounts')
+                    field: account_id
+                  config:
+                    severity: warn
+          - name: fee_type
+            description: Kind of fee. Arrives as a code (`late_payment`) or as a label ("Late Payment").
+          - name: amount
+            description: Fee amount in US dollars. Sometimes empty.
+            data_tests:
+              - not_null:
+                  config:
+                    severity: warn
+
+      - name: account_balances
+        description: >
+          Monthly balance extract, one row per account for every month in which
+          the account was open at any point. A small share of rows is delivered twice.
+        columns:
+          - name: account_id
+            description: Account identifier.
+            data_tests:
+              - not_null
+          - name: balance_month
+            description: First day of the month the balances refer to.
+          - name: average_balance
+            description: Average daily balance over the whole month, in US dollars.
+          - name: interest_bearing_balance
+            description: Part of the average balance that accrues interest at the account rate.
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns:
+                  - account_id
+                  - balance_month
+              config:
+                severity: warn

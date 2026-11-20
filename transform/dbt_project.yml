@@ -1,0 +1,45 @@
+name: retail_banking
+version: "1.0.0"
+profile: retail_banking
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - target
+  - dbt_packages
+
+flags:
+  send_anonymous_usage_stats: false
+
+vars:
+  # Transactions above this amount are treated as source errors and rejected.
+  max_plausible_transaction_amount: 250000
+  # Customer lifetime value assumptions. See the `customer_lifetime_value` docs block.
+  clv_horizon_months: 60
+  clv_annual_discount_rate: 0.10
+  clv_mature_age_months: 24
+
+models:
+  retail_banking:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: table
+      +schema: intermediate
+    marts:
+      +materialized: table
+      +schema: marts
+
+seeds:
+  retail_banking:
+    +schema: reference
+    product_servicing_costs:
+      +column_types:
+        monthly_servicing_cost: decimal(18, 2)
+    channel_transaction_costs:
+      +column_types:
+        cost_per_transaction: decimal(18, 2)

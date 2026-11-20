@@ -1,0 +1,49 @@
+version: 2
+
+seeds:
+  - name: channel_mapping
+    description: >
+      Maps every spelling of a channel found in the sources to its standard
+      value. Staging models look channels up by `lower(trim(label))`. When a
+      source starts sending a new spelling, the `not_null` tests on the staged
+      channel columns fail until a row is added here.
+    columns:
+      - name: raw_channel
+        description: Channel label as found in a source, lowercased and trimmed.
+        data_tests:
+          - unique
+          - not_null
+      - name: channel
+        description: Standard channel value used across the project.
+        data_tests:
+          - not_null
+
+  - name: product_servicing_costs
+    description: >
+      Fixed monthly cost of keeping one account open, by product category, from
+      the finance team's cost allocation. Illustrative values.
+    columns:
+      - name: product_category
+        description: Product family the cost applies to.
+        data_tests:
+          - unique
+          - not_null
+      - name: monthly_servicing_cost
+        description: Cost per open account per month, in US dollars.
+        data_tests:
+          - not_null
+
+  - name: channel_transaction_costs
+    description: >
+      Unit cost of handling one transaction, by servicing channel, from the
+      finance team's cost allocation. Illustrative values.
+    columns:
+      - name: channel
+        description: Servicing channel the cost applies to.
+        data_tests:
+          - unique
+          - not_null
+      - name: cost_per_transaction
+        description: Cost per transaction in US dollars.
+        data_tests:
+          - not_null

@@ -1,0 +1,22 @@
+version: 2
+
+sources:
+  - name: treasury
+    description: >
+      Rates published by the treasury desk of the fictional bank, loaded as
+      text into the `raw_treasury` schema. Synthetic data.
+    schema: raw_treasury
+    tables:
+      - name: funds_transfer_rates
+        description: >
+          Funds transfer pricing (FTP) rate, one row per month. It is the
+          internal annual rate at which treasury charges business lines for
+          funding loans and credits them for deposits.
+        columns:
+          - name: rate_month
+            description: First day of the month the rate applies to.
+            data_tests:
+              - not_null
+              - unique
+          - name: annual_rate
+            description: Annual FTP rate as a decimal (0.0440 is 4.40%).

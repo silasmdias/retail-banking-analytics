@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: dq_rejected_records
+    description: >
+      One row per source table, month and rejection reason, counting the
+      records that screening refused to use. Months and reasons without
+      rejections have no row. Use it to watch source quality over time: a jump
+      in `rejection_rate` means a feed changed or broke.
+    columns:
+      - name: rejected_records_id
+        description: Surrogate key of source table, record month and rejection reason.
+        data_tests:
+          - unique
+          - not_null
+      - name: source_table
+        description: Source table the records came from (`transactions` or `fees`).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [transactions, fees]
+      - name: record_month
+        description: >
+          First day of the month the records belong to: the posting month for
+          transactions (the transaction date itself can be the problem) and the
+          fee month for fees.
+      - name: rejection_reason
+        description: >
+          Rule the records failed. See `int_transactions_screened` and
+          `int_fees_screened` for the rules and their order.
+        data_tests:
+          - not_null
+      - name: rejected_records
+        description: Number of records rejected for this reason in the month.
+      - name: total_records
+        description: All records of the source table in the month, usable or not. Repeats across reasons.
+      - name: rejection_rate
+        description: '`rejected_records / total_records`, as a decimal.'
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 0.01
+              config:
+                # Small months swing too much for a rate to mean anything.
+                where: "total_records >= 1000"
+              description: >
+                More than 1% of a month's records rejected for a single reason
+                is far above the usual 0.1%. Look at the month's file for that
+                source before trusting the month's figures.

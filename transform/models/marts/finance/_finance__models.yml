@@ -1,0 +1,380 @@
+version: 2
+
+models:
+  - name: revenue_by_product_channel
+    description: >
+      Monthly revenue by product and sales channel: one row per reporting
+      month, product and sales channel with at least one active account.
+      Answers "where does revenue come from?" and splits it into interest
+      margin, fees and interchange. Sums to `fct_account_monthly_profitability`
+      to the cent.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: revenue_by_product_channel_id
+        description: Surrogate key of reporting month, product and sales channel.
+        data_type: varchar
+        data_tests:
+          - unique
+          - not_null
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+        data_type: date
+      - name: product_id
+        description: Product identifier.
+        data_type: varchar
+      - name: product_name
+        description: Commercial name of the product.
+        data_type: varchar
+      - name: product_category
+        description: Product family (`checking`, `savings`, `credit_card`, `personal_loan`).
+        data_type: varchar
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+        data_type: varchar
+      - name: active_accounts
+        description: Accounts with a balance, a fee or a valid transaction in the month.
+        data_type: integer
+      - name: net_interest_income
+        description: '{{ doc("net_interest_income") }}'
+        data_type: decimal(18,2)
+      - name: fee_revenue
+        description: '{{ doc("fee_revenue") }}'
+        data_type: decimal(18,2)
+      - name: interchange_revenue
+        description: '{{ doc("interchange_revenue") }}'
+        data_type: decimal(18,2)
+      - name: total_revenue
+        description: '{{ doc("total_revenue") }}'
+        data_type: decimal(18,2)
+      - name: revenue_per_active_account
+        description: >
+          `total_revenue / active_accounts`, in US dollars. Do not sum or
+          average it across rows: recompute it from the two totals.
+        data_type: decimal(18,2)
+      - name: total_revenue_prior_year
+        description: >
+          Total revenue of the same product and channel twelve months earlier.
+          Null in the first year of data and when the line did not exist yet.
+        data_type: decimal(18,2)
+
+  - name: budget_vs_actual
+    description: >
+      Planned against actual revenue: one row per reporting month, product and
+      sales channel that has a budget, actual revenue or both. Answers "are we
+      on plan?" with the variance for the month and for the year to date.
+      Actual revenue comes from `revenue_by_product_channel`.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: budget_vs_actual_id
+        description: Surrogate key of reporting month, product and sales channel.
+        data_type: varchar
+        data_tests:
+          - unique
+          - not_null
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+        data_type: date
+      - name: product_id
+        description: Product identifier.
+        data_type: varchar
+      - name: product_name
+        description: Commercial name of the product.
+        data_type: varchar
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+        data_type: varchar
+      - name: budget_revenue
+        description: Planned total revenue for the month, in US dollars. Null when the line was not planned.
+        data_type: decimal(18,2)
+      - name: actual_revenue
+        description: >
+          Actual total revenue for the month, in US dollars. Null when a planned
+          line had no active account.
+        data_type: decimal(18,2)
+      - name: variance_amount
+        description: >
+          Actual minus budget, in US dollars, treating a missing side as zero.
+          Positive means revenue above plan.
+        data_type: decimal(18,2)
+      - name: variance_pct
+        description: >
+          `variance_amount / budget_revenue`, as a decimal (0.0500 is 5% above
+          plan). Null when there is no budget or the budget is zero.
+        data_type: decimal(18,4)
+      - name: variance_status
+        description: >
+          `on_plan` when the variance is within 5% of budget either way,
+          `above_plan` or `below_plan` outside that band, `unbudgeted` when
+          revenue has no plan, `no_actuals` when a plan has no revenue.
+        data_type: varchar
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [on_plan, above_plan, below_plan, unbudgeted, no_actuals]
+      - name: budget_revenue_ytd
+        description: Budget accumulated from January of the same year through this month, in US dollars.
+        data_type: decimal(18,2)
+      - name: actual_revenue_ytd
+        description: Actual revenue accumulated from January of the same year through this month, in US dollars.
+        data_type: decimal(18,2)
+      - name: variance_amount_ytd
+        description: Year-to-date actual minus year-to-date budget, in US dollars.
+        data_type: decimal(18,2)
+
+  - name: customer_lifetime_value_curve
+    description: >
+      The lifetime value curve of each acquisition cohort: one row per cohort
+      month, acquisition channel and month since acquisition, from month 0 to
+      the end of the horizon. Months the cohort has lived hold actual figures;
+      later months hold projections (`is_projected`). Use it to chart how value
+      builds up with age, to compare cohorts at the same age and to read
+      retention. `customer_lifetime_value` is the one-row-per-cohort summary.
+      {{ doc("customer_lifetime_value") }}
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: customer_lifetime_value_curve_id
+        description: Surrogate key of cohort month, acquisition channel and months since acquisition.
+        data_type: varchar
+        data_tests:
+          - unique
+          - not_null
+      - name: cohort_month
+        description: '{{ doc("cohort_month") }}'
+        data_type: date
+      - name: acquisition_channel
+        description: '{{ doc("sales_channel") }}'
+        data_type: varchar
+      - name: months_since_acquisition
+        description: '{{ doc("months_since_acquisition") }}'
+        data_type: integer
+      - name: is_projected
+        description: >
+          False for months the cohort has already lived (actual data), true for
+          months still in the future (assumptions).
+        data_type: boolean
+      - name: customers_acquired
+        description: Customers in the cohort and channel. Constant across the ages of a cohort.
+        data_type: integer
+      - name: active_customers
+        description: >
+          Customers with at least one active account in the month. A count for
+          lived months; an expected value, with decimals, for projected ones.
+        data_type: decimal(18,2)
+      - name: retention_rate
+        description: >
+          `active_customers / customers_acquired`: share of the original cohort
+          still active at this age, as a decimal.
+        data_type: decimal(9,4)
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: contribution_margin
+        description: >
+          Contribution margin of the whole cohort in this month, not discounted,
+          in US dollars. Actual for lived months, expected for projected ones.
+        data_type: decimal(18,2)
+      - name: discount_factor
+        description: >
+          Present-value factor for this age: `(1 + annual rate) ^ (-age / 12)`,
+          with the rate from the `clv_annual_discount_rate` variable. Month 0 is 1.
+        data_type: decimal(9,6)
+      - name: discounted_contribution_margin
+        description: '`contribution_margin * discount_factor`, in US dollars.'
+        data_type: decimal(18,2)
+      - name: cumulative_contribution_margin
+        description: >
+          Cohort margin accumulated from month 0 through this month, not
+          discounted, in US dollars. Compared with acquisition spend to find the payback month.
+        data_type: decimal(18,2)
+      - name: cumulative_discounted_margin
+        description: Cohort discounted margin accumulated from month 0 through this month, in US dollars.
+        data_type: decimal(18,2)
+      - name: cumulative_clv
+        description: >
+          `cumulative_discounted_margin / customers_acquired`: lifetime value
+          per acquired customer built up to this age, in US dollars. At the last
+          age of the horizon it equals `customer_lifetime_value`.
+        data_type: decimal(18,2)
+
+  - name: customer_lifetime_value
+    description: >
+      Lifetime value and acquisition economics of each cohort: one row per
+      cohort month and acquisition channel. Answers "what is a customer worth,
+      and does acquisition pay back?". To aggregate cohorts or channels, sum
+      the totals (`realized_discounted_margin`, `projected_discounted_margin`,
+      `acquisition_spend`, `customers_acquired`) and divide; do not average the
+      per-customer columns.
+      {{ doc("customer_lifetime_value") }}
+    config:
+      contract:
+        enforced: true
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(customer_lifetime_value - realized_clv - projected_clv) <= 0.01"
+          description: >
+            Lifetime value must be its realized part plus its projected part,
+            give or take one cent of rounding.
+    columns:
+      - name: customer_lifetime_value_id
+        description: Surrogate key of cohort month and acquisition channel.
+        data_type: varchar
+        data_tests:
+          - unique
+          - not_null
+      - name: cohort_month
+        description: '{{ doc("cohort_month") }}'
+        data_type: date
+      - name: acquisition_channel
+        description: '{{ doc("sales_channel") }}'
+        data_type: varchar
+      - name: customers_acquired
+        description: Customers acquired through the channel in the cohort month.
+        data_type: integer
+      - name: months_observed
+        description: >
+          Months of actual history behind the cohort, counting the acquisition
+          month. A cohort with few observed months is mostly projection.
+        data_type: integer
+      - name: acquisition_spend
+        description: Sales and marketing spend of the channel in the cohort month, in US dollars.
+        data_type: decimal(18,2)
+        data_tests:
+          - not_null:
+              description: >
+                A null means finance reported no spend for a month and channel
+                that acquired customers. Check the acquisition spend file.
+      - name: realized_discounted_margin
+        description: Discounted contribution margin the cohort has already generated, in US dollars.
+        data_type: decimal(18,2)
+      - name: projected_discounted_margin
+        description: >
+          Discounted contribution margin the cohort is expected to generate in
+          the months of the horizon it has not lived yet, in US dollars.
+        data_type: decimal(18,2)
+      - name: customer_acquisition_cost
+        description: '{{ doc("customer_acquisition_cost") }}'
+        data_type: decimal(18,2)
+      - name: realized_clv
+        description: '`realized_discounted_margin / customers_acquired`: the part of lifetime value already earned.'
+        data_type: decimal(18,2)
+      - name: projected_clv
+        description: '`projected_discounted_margin / customers_acquired`: the part of lifetime value still assumed.'
+        data_type: decimal(18,2)
+      - name: customer_lifetime_value
+        description: >
+          Lifetime value per acquired customer over the horizon, in US dollars:
+          `realized_clv + projected_clv`. Before acquisition cost.
+        data_type: decimal(18,2)
+      - name: clv_to_cac_ratio
+        description: >
+          Lifetime value divided by acquisition cost. Above 1 the cohort earns
+          back more than it cost to acquire; 3 or more is the usual rule of
+          thumb for a healthy channel. Null when the channel had no spend.
+        data_type: decimal(18,2)
+      - name: cac_payback_months
+        description: >
+          Months until the cohort's accumulated contribution margin, not
+          discounted, covers its acquisition spend, counting the acquisition
+          month as 1. Null when that does not happen within the horizon.
+        data_type: integer
+      - name: is_payback_projected
+        description: >
+          True when the payback month falls in the projected part of the curve,
+          so the cohort has not actually paid back yet.
+        data_type: boolean
+
+unit_tests:
+  - name: test_budget_vs_actual_classifies_each_variance
+    description: >
+      Scenario: in one month a product has a line on plan, one above, one
+      below, one planned without revenue and one with revenue never planned;
+      the first line then misses plan in the following month.
+      Then each line gets its status and year-to-date figures accumulate.
+    model: budget_vs_actual
+    given:
+      - input: ref('stg_finance__revenue_budget')
+        rows:
+          - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: branch, budget_revenue: 1000}
+          - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: online, budget_revenue: 1000}
+          - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: partner, budget_revenue: 1000}
+          - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: call_center, budget_revenue: 500}
+          - {budget_month: "2024-02-01", product_id: CHK_STD, sales_channel: branch, budget_revenue: 1000}
+      - input: ref('revenue_by_product_channel')
+        rows:
+          - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: branch, total_revenue: 1040}
+          - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: online, total_revenue: 1200}
+          - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: partner, total_revenue: 700}
+          - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: mobile_app, total_revenue: 300}
+          - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: branch, total_revenue: 900}
+      - input: ref('dim_products')
+        rows:
+          - {product_id: CHK_STD, product_name: Everyday Checking}
+    expect:
+      rows:
+        - {reporting_month: "2024-01-01", sales_channel: branch, budget_revenue: 1000, actual_revenue: 1040, variance_amount: 40, variance_pct: 0.04, variance_status: on_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1040}
+        - {reporting_month: "2024-01-01", sales_channel: online, budget_revenue: 1000, actual_revenue: 1200, variance_amount: 200, variance_pct: 0.2, variance_status: above_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1200}
+        - {reporting_month: "2024-01-01", sales_channel: partner, budget_revenue: 1000, actual_revenue: 700, variance_amount: -300, variance_pct: -0.3, variance_status: below_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 700}
+        - {reporting_month: "2024-01-01", sales_channel: call_center, budget_revenue: 500, actual_revenue: null, variance_amount: -500, variance_pct: -1, variance_status: no_actuals, budget_revenue_ytd: 500, actual_revenue_ytd: 0}
+        - {reporting_month: "2024-01-01", sales_channel: mobile_app, budget_revenue: null, actual_revenue: 300, variance_amount: 300, variance_pct: null, variance_status: unbudgeted, budget_revenue_ytd: 0, actual_revenue_ytd: 300}
+        - {reporting_month: "2024-02-01", sales_channel: branch, budget_revenue: 1000, actual_revenue: 900, variance_amount: -100, variance_pct: -0.1, variance_status: below_plan, budget_revenue_ytd: 2000, actual_revenue_ytd: 1940}
+
+  - name: test_clv_curve_projects_young_cohorts_from_older_ones
+    description: >
+      Scenario: the January cohort (4 customers) has lived three months and
+      halves every month; the March cohort (6 customers) has lived only its
+      first month. The horizon is three months.
+      Then the March cohort is projected with January's retention and margin
+      per active customer. The discount rate is set absurdly high on purpose:
+      at 409,500% a year the value halves every month, which keeps the expected
+      numbers easy to check by hand.
+    model: customer_lifetime_value_curve
+    overrides:
+      vars:
+        clv_horizon_months: 3
+        clv_mature_age_months: 12
+        clv_annual_discount_rate: 4095
+    given:
+      - input: ref('dim_customers')
+        rows:
+          - {customer_id: A1, cohort_month: "2024-01-01", acquisition_channel: online}
+          - {customer_id: A2, cohort_month: "2024-01-01", acquisition_channel: online}
+          - {customer_id: A3, cohort_month: "2024-01-01", acquisition_channel: online}
+          - {customer_id: A4, cohort_month: "2024-01-01", acquisition_channel: online}
+          - {customer_id: B1, cohort_month: "2024-03-01", acquisition_channel: online}
+          - {customer_id: B2, cohort_month: "2024-03-01", acquisition_channel: online}
+          - {customer_id: B3, cohort_month: "2024-03-01", acquisition_channel: online}
+          - {customer_id: B4, cohort_month: "2024-03-01", acquisition_channel: online}
+          - {customer_id: B5, cohort_month: "2024-03-01", acquisition_channel: online}
+          - {customer_id: B6, cohort_month: "2024-03-01", acquisition_channel: online}
+      - input: ref('fct_customer_monthly_profitability')
+        rows:
+          - {customer_id: A1, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: A2, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: A3, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: A4, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: A1, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 1, contribution_margin: 20}
+          - {customer_id: A2, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 1, contribution_margin: 20}
+          - {customer_id: A1, reporting_month: "2024-03-01", cohort_month: "2024-01-01", acquisition_channel: online, months_since_acquisition: 2, contribution_margin: 32}
+          - {customer_id: B1, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: B2, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: B3, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: B4, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: B5, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: B6, reporting_month: "2024-03-01", cohort_month: "2024-03-01", acquisition_channel: online, months_since_acquisition: 0, contribution_margin: 10}
+    expect:
+      rows:
+        - {cohort_month: "2024-01-01", months_since_acquisition: 0, is_projected: false, customers_acquired: 4, active_customers: 4, retention_rate: 1, contribution_margin: 40, discounted_contribution_margin: 40, cumulative_discounted_margin: 40, cumulative_clv: 10}
+        - {cohort_month: "2024-01-01", months_since_acquisition: 1, is_projected: false, customers_acquired: 4, active_customers: 2, retention_rate: 0.5, contribution_margin: 40, discounted_contribution_margin: 20, cumulative_discounted_margin: 60, cumulative_clv: 15}
+        - {cohort_month: "2024-01-01", months_since_acquisition: 2, is_projected: false, customers_acquired: 4, active_customers: 1, retention_rate: 0.25, contribution_margin: 32, discounted_contribution_margin: 8, cumulative_discounted_margin: 68, cumulative_clv: 17}
+        - {cohort_month: "2024-03-01", months_since_acquisition: 0, is_projected: false, customers_acquired: 6, active_customers: 6, retention_rate: 1, contribution_margin: 60, discounted_contribution_margin: 60, cumulative_discounted_margin: 60, cumulative_clv: 10}
+        - {cohort_month: "2024-03-01", months_since_acquisition: 1, is_projected: true, customers_acquired: 6, active_customers: 3, retention_rate: 0.5, contribution_margin: 60, discounted_contribution_margin: 30, cumulative_discounted_margin: 90, cumulative_clv: 15}
+        - {cohort_month: "2024-03-01", months_since_acquisition: 2, is_projected: true, customers_acquired: 6, active_customers: 1.5, retention_rate: 0.25, contribution_margin: 48, discounted_contribution_margin: 12, cumulative_discounted_margin: 102, cumulative_clv: 17}

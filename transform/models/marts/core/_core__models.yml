@@ -1,0 +1,237 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: >
+      One row per customer, excluding internal test customers. Adds the
+      acquisition cohort and a summary of the customer's accounts as of the
+      latest load. Customers acquired before the first month of data do not
+      exist: the fictional bank starts with its first cohort.
+    columns:
+      - name: customer_id
+        description: Customer identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: signup_date
+        description: Date the customer opened their first account.
+      - name: cohort_month
+        description: '{{ doc("cohort_month") }}'
+        data_tests:
+          - not_null
+      - name: acquisition_channel
+        description: '{{ doc("sales_channel") }}'
+        data_tests:
+          - not_null
+      - name: segment
+        description: Commercial segment. `unassigned` when the source sends none.
+      - name: region
+        description: Region where the customer lives.
+      - name: birth_year
+        description: Year of birth.
+      - name: risk_band
+        description: Credit risk band at onboarding, from `A` (lowest risk) to `E` (highest).
+      - name: first_product_id
+        description: Product of the first account the customer opened. Ties on date go to the lower account id.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+      - name: accounts_opened
+        description: Number of accounts the customer has ever opened, including closed ones.
+      - name: open_accounts
+        description: Number of accounts open as of the latest load.
+      - name: customer_status
+        description: >
+          `active` while at least one account is open. Otherwise `charged_off`
+          if any account was written off after default, else `churned`.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [active, charged_off, churned]
+      - name: relationship_end_date
+        description: Date the last account closed. Null while the customer is active.
+
+  - name: dim_accounts
+    description: >
+      One row per account, excluding accounts of internal test customers.
+      Status and closing date reflect the latest load.
+    columns:
+      - name: account_id
+        description: Account identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Owner of the account.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: product_id
+        description: Product contracted.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+      - name: product_category
+        description: Product family, repeated here to save a join.
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+      - name: opened_date
+        description: Date the account was opened.
+      - name: closed_date
+        description: Date the account was closed, charged off or repaid in full. Null while open.
+      - name: account_status
+        description: '`open`, `closed` or `charged_off`.'
+      - name: annual_interest_rate
+        description: Contract rate as a decimal, fixed when the account opens. Zero for checking.
+      - name: credit_limit
+        description: Credit limit in US dollars. Only credit cards have one.
+      - name: original_principal
+        description: Amount lent at origination, in US dollars. Only personal loans have one.
+      - name: term_months
+        description: Contract term in months. Only personal loans have one.
+
+  - name: dim_products
+    description: One row per product, with its pricing attributes and its fixed servicing cost.
+    columns:
+      - name: product_id
+        description: Product identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: Commercial name of the product.
+      - name: product_category
+        description: Product family (`checking`, `savings`, `credit_card`, `personal_loan`).
+      - name: balance_side
+        description: '`asset` when the bank lends, `liability` when the bank owes the balance to the customer.'
+      - name: interchange_rate
+        description: Share of card purchase volume earned as interchange. Zero for products without a card.
+      - name: monthly_servicing_cost
+        description: Fixed cost of keeping one account of this product open for a month, in US dollars.
+        data_tests:
+          - not_null:
+              description: >
+                A null means the product's category has no row in the
+                `product_servicing_costs` seed.
+
+  - name: fct_account_monthly_profitability
+    description: >
+      One row per account and month in which the account had a balance, a fee
+      or a valid transaction. It is the atomic fact of the project: every
+      revenue and margin figure in the finance marts is a sum of these rows, so
+      they reconcile to the cent. Excludes internal test customers.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "contribution_margin = total_revenue - credit_losses - cost_to_serve"
+          description: >
+            The margin must be exactly revenue minus credit losses minus cost
+            to serve. A failure points to a column added to one side of the
+            calculation in this model and not to the other.
+    columns:
+      - name: account_month_id
+        description: Surrogate key of account and reporting month.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: Account identifier.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_accounts')
+                field: account_id
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+        data_tests:
+          - not_null
+      - name: customer_id
+        description: Owner of the account.
+      - name: product_id
+        description: Product of the account.
+      - name: sales_channel
+        description: '{{ doc("sales_channel") }}'
+      - name: average_balance
+        description: >
+          Average daily balance over the month, in US dollars. Null in the rare
+          month with activity but no balance row.
+      - name: interest_bearing_balance
+        description: Part of the average balance that accrues interest at the account rate.
+      - name: transaction_count
+        description: Number of valid transactions in the month.
+      - name: net_interest_income
+        description: '{{ doc("net_interest_income") }}'
+      - name: fee_revenue
+        description: '{{ doc("fee_revenue") }}'
+      - name: interchange_revenue
+        description: '{{ doc("interchange_revenue") }}'
+      - name: total_revenue
+        description: '{{ doc("total_revenue") }}'
+      - name: credit_losses
+        description: '{{ doc("credit_losses") }}'
+      - name: cost_to_serve
+        description: '{{ doc("cost_to_serve") }}'
+      - name: contribution_margin
+        description: '{{ doc("contribution_margin") }}'
+
+  - name: fct_customer_monthly_profitability
+    description: >
+      One row per customer and month in which the customer had at least one
+      active account, so a row also means "this customer was active this
+      month". Sums the account-level fact and adds the customer's age in months
+      since acquisition, which is what cohort analysis needs.
+    columns:
+      - name: customer_month_id
+        description: Surrogate key of customer and reporting month.
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Customer identifier.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+      - name: cohort_month
+        description: '{{ doc("cohort_month") }}'
+      - name: acquisition_channel
+        description: '{{ doc("sales_channel") }}'
+      - name: months_since_acquisition
+        description: '{{ doc("months_since_acquisition") }}'
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+              description: >
+                A negative age means activity dated before the customer's
+                signup month. Check `signup_date` against the first account's
+                `opened_date`.
+      - name: active_accounts
+        description: Number of the customer's accounts with a row in the account-level fact this month.
+      - name: net_interest_income
+        description: '{{ doc("net_interest_income") }}'
+      - name: fee_revenue
+        description: '{{ doc("fee_revenue") }}'
+      - name: interchange_revenue
+        description: '{{ doc("interchange_revenue") }}'
+      - name: total_revenue
+        description: '{{ doc("total_revenue") }}'
+      - name: credit_losses
+        description: '{{ doc("credit_losses") }}'
+      - name: cost_to_serve
+        description: '{{ doc("cost_to_serve") }}'
+      - name: contribution_margin
+        description: '{{ doc("contribution_margin") }}'

@@ -1,0 +1,261 @@
+version: 2
+
+models:
+  - name: int_transactions_screened
+    description: >
+      One row per staged transaction, with the account's customer and product
+      attached and a verdict on whether the record can be used. Nothing is
+      dropped here: rejected records keep a `rejection_reason` so they can be
+      counted in `dq_rejected_records`. Every model that measures activity must
+      filter on `is_valid`.
+    columns:
+      - name: transaction_id
+        description: Transaction identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: Account as sent by the source.
+      - name: customer_id
+        description: Owner of the account. Null when the account is unknown.
+      - name: product_id
+        description: Product of the account. Null when the account is unknown.
+      - name: transaction_date
+        description: Date the transaction happened.
+      - name: posted_date
+        description: Date the transaction was posted.
+      - name: transaction_type
+        description: What the transaction is.
+      - name: channel
+        description: '{{ doc("servicing_channel") }}'
+      - name: amount
+        description: Amount in US dollars, always positive.
+      - name: rejection_reason
+        description: >
+          Why the record cannot be used, or null when it can. Rules are checked
+          in this order and the first failure wins: `unknown_account` (no such
+          account), `missing_amount`, `unreadable_date`, `before_account_opening`
+          (dated before the account existed), `implausible_amount` (above the
+          `max_plausible_transaction_amount` variable).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - unknown_account
+                  - missing_amount
+                  - unreadable_date
+                  - before_account_opening
+                  - implausible_amount
+      - name: is_valid
+        description: True when no rejection rule failed.
+        data_tests:
+          - not_null
+
+  - name: int_fees_screened
+    description: >
+      One row per staged fee, with the account's customer and product attached
+      and a verdict on whether the record can be used. Rejected fees are kept
+      with a `rejection_reason` for `dq_rejected_records`.
+    columns:
+      - name: fee_id
+        description: Fee identifier.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        description: Account as sent by the source.
+      - name: customer_id
+        description: Owner of the account. Null when the account is unknown.
+      - name: product_id
+        description: Product of the account. Null when the account is unknown.
+      - name: transaction_id
+        description: Transaction that triggered the fee, when there is one.
+      - name: fee_type
+        description: Kind of fee.
+      - name: fee_date
+        description: Date the fee was charged.
+      - name: amount
+        description: Fee amount in US dollars.
+      - name: fee_status
+        description: '`posted`, `waived` or `reversed`.'
+      - name: rejection_reason
+        description: >
+          Why the record cannot be used, or null when it can: `unknown_account`
+          or `missing_amount`, checked in that order.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [unknown_account, missing_amount]
+      - name: is_valid
+        description: True when no rejection rule failed.
+        data_tests:
+          - not_null
+
+  - name: int_net_interest_by_account_month
+    description: >
+      One row per account and month with a balance, holding the net interest
+      income earned on that balance after funds transfer pricing.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - account_id
+              - reporting_month
+    columns:
+      - name: account_id
+        description: Account identifier.
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+      - name: average_balance
+        description: Average daily balance over the month, in US dollars. Funded or credited at the FTP rate.
+      - name: interest_bearing_balance
+        description: Part of the average balance that accrues interest at the account rate.
+      - name: annual_interest_rate
+        description: Contract rate of the account, as a decimal.
+      - name: funds_transfer_rate
+        description: Annual FTP rate of the month, as a decimal.
+      - name: customer_interest
+        description: >
+          Interest at the account rate for the month, in US dollars: charged to
+          the customer on lending products, paid to the customer on deposits.
+      - name: funds_transfer_amount
+        description: >
+          FTP amount for the month, in US dollars: a funding charge on lending
+          products, a credit on deposits.
+      - name: net_interest_income
+        description: '{{ doc("net_interest_income") }}'
+        data_tests:
+          - not_null:
+              description: >
+                A null means the month has no funds transfer rate. Check that
+                treasury delivered the rate for every month with balances.
+
+  - name: int_fee_revenue_by_account_month
+    description: >
+      One row per account and month in which at least one fee was kept by the
+      bank. Accounts and months without posted fees have no row.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - account_id
+              - reporting_month
+    columns:
+      - name: account_id
+        description: Account identifier.
+      - name: reporting_month
+        description: First day of the month in which the fees were charged.
+      - name: fees_posted
+        description: Number of fees kept by the bank in the month.
+      - name: fee_revenue
+        description: '{{ doc("fee_revenue") }}'
+
+  - name: int_transaction_activity_by_account_month
+    description: >
+      One row per account and month with at least one valid transaction,
+      summarizing what the month's transactions earned and cost.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - account_id
+              - reporting_month
+    columns:
+      - name: account_id
+        description: Account identifier.
+      - name: reporting_month
+        description: '{{ doc("reporting_month") }}'
+      - name: transaction_count
+        description: Number of valid transactions in the month.
+      - name: card_purchase_volume
+        description: Sum of credit and debit card purchases, in US dollars. The base for interchange.
+      - name: interchange_revenue
+        description: '{{ doc("interchange_revenue") }}'
+      - name: credit_losses
+        description: '{{ doc("credit_losses") }}'
+      - name: transaction_cost
+        description: >
+          Cost of handling the month's transactions, in US dollars: each
+          transaction times the unit cost of its servicing channel.
+
+unit_tests:
+  - name: test_int_transactions_screened_applies_rejection_rules_in_order
+    description: >
+      Scenario: one usable transaction and one for each rejection rule, plus a
+      record that breaks two rules at once.
+      Then each record gets the first rule it fails, and only the usable one is valid.
+    model: int_transactions_screened
+    given:
+      - input: ref('stg_core_banking__accounts')
+        rows:
+          - {account_id: A1, customer_id: C1, product_id: CC_STD, opened_date: "2024-02-10"}
+      - input: ref('stg_core_banking__transactions')
+        rows:
+          - {transaction_id: ok, account_id: A1, transaction_date: "2024-02-10", amount: 50.00}
+          - {transaction_id: orphan, account_id: A9, transaction_date: "2024-03-01", amount: 50.00}
+          - {transaction_id: no_amount, account_id: A1, transaction_date: "2024-03-01", amount: null}
+          - {transaction_id: no_date, account_id: A1, transaction_date: null, amount: 50.00}
+          - {transaction_id: too_early, account_id: A1, transaction_date: "2024-02-09", amount: 50.00}
+          - {transaction_id: too_large, account_id: A1, transaction_date: "2024-03-01", amount: 250000.01}
+          - {transaction_id: orphan_without_amount, account_id: A9, transaction_date: "2024-03-01", amount: null}
+    expect:
+      rows:
+        - {transaction_id: ok, customer_id: C1, rejection_reason: null, is_valid: true}
+        - {transaction_id: orphan, customer_id: null, rejection_reason: unknown_account, is_valid: false}
+        - {transaction_id: no_amount, customer_id: C1, rejection_reason: missing_amount, is_valid: false}
+        - {transaction_id: no_date, customer_id: C1, rejection_reason: unreadable_date, is_valid: false}
+        - {transaction_id: too_early, customer_id: C1, rejection_reason: before_account_opening, is_valid: false}
+        - {transaction_id: too_large, customer_id: C1, rejection_reason: implausible_amount, is_valid: false}
+        - {transaction_id: orphan_without_amount, customer_id: null, rejection_reason: unknown_account, is_valid: false}
+
+  - name: test_int_fee_revenue_counts_only_posted_valid_fees
+    description: >
+      Scenario: an account is charged five fees in a month: two kept, one
+      waived, one reversed and one rejected by screening.
+      Then only the two kept fees are revenue.
+    model: int_fee_revenue_by_account_month
+    given:
+      - input: ref('int_fees_screened')
+        rows:
+          - {fee_id: F1, account_id: A1, fee_date: "2024-03-05", amount: 8.00, fee_status: posted, is_valid: true}
+          - {fee_id: F2, account_id: A1, fee_date: "2024-03-20", amount: 34.00, fee_status: posted, is_valid: true}
+          - {fee_id: F3, account_id: A1, fee_date: "2024-03-21", amount: 34.00, fee_status: waived, is_valid: true}
+          - {fee_id: F4, account_id: A1, fee_date: "2024-03-22", amount: 30.00, fee_status: reversed, is_valid: true}
+          - {fee_id: F5, account_id: A1, fee_date: "2024-03-23", amount: null, fee_status: posted, is_valid: false}
+          - {fee_id: F6, account_id: A1, fee_date: "2024-04-01", amount: 3.00, fee_status: posted, is_valid: true}
+    expect:
+      rows:
+        - {account_id: A1, reporting_month: "2024-03-01", fees_posted: 2, fee_revenue: 42.00}
+        - {account_id: A1, reporting_month: "2024-04-01", fees_posted: 1, fee_revenue: 3.00}
+
+  - name: test_int_net_interest_takes_the_margin_over_funds_transfer_pricing
+    description: >
+      Scenario: with funds priced at 6% a year, a loan charges 18%, a savings
+      account pays 3% and a credit card paid in full carries no interest.
+      Then the loan earns the 12-point spread, the savings account earns the
+      3-point spread, and the card costs its funding.
+    model: int_net_interest_by_account_month
+    given:
+      - input: ref('stg_core_banking__account_balances')
+        rows:
+          - {account_id: LOAN, balance_month: "2024-03-01", average_balance: 12000.00, interest_bearing_balance: 12000.00}
+          - {account_id: SAVINGS, balance_month: "2024-03-01", average_balance: 20000.00, interest_bearing_balance: 20000.00}
+          - {account_id: CARD, balance_month: "2024-03-01", average_balance: 1000.00, interest_bearing_balance: 0.00}
+      - input: ref('stg_core_banking__accounts')
+        rows:
+          - {account_id: LOAN, product_id: PL_STD, annual_interest_rate: 0.1800}
+          - {account_id: SAVINGS, product_id: SAV_HY, annual_interest_rate: 0.0300}
+          - {account_id: CARD, product_id: CC_STD, annual_interest_rate: 0.2400}
+      - input: ref('stg_core_banking__products')
+        rows:
+          - {product_id: PL_STD, balance_side: asset}
+          - {product_id: SAV_HY, balance_side: liability}
+          - {product_id: CC_STD, balance_side: asset}
+      - input: ref('stg_treasury__funds_transfer_rates')
+        rows:
+          - {rate_month: "2024-03-01", funds_transfer_rate: 0.0600}
+    expect:
+      rows:
+        - {account_id: LOAN, customer_interest: 180.00, funds_transfer_amount: 60.00, net_interest_income: 120.00}
+        - {account_id: SAVINGS, customer_interest: 50.00, funds_transfer_amount: 100.00, net_interest_income: 50.00}
+        - {account_id: CARD, customer_interest: 0.00, funds_transfer_amount: 5.00, net_interest_income: -5.00}

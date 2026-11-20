@@ -1,0 +1,24 @@
+# Generated data and local warehouse
+data/raw/
+*.duckdb
+*.duckdb.wal
+
+# dbt
+transform/target/
+transform/dbt_packages/
+transform/logs/
+transform/.user.yml
+logs/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Editors, OS and local settings
+.DS_Store
+.idea/
+.vscode/
+.env

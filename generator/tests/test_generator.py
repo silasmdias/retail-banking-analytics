@@ -49,6 +49,33 @@ def test_extending_the_end_month_does_not_rewrite_history():
     assert extended.customers[: len(short.customers)] == short.customers
     assert len(extended.customers) > len(short.customers)
 
+    def budget_through(data, last_month):
+        last = f"{last_month // 12:04d}-{last_month % 12 + 1:02d}-01"
+        return [row for row in all_rows(data.revenue_budget) if row[0] <= last]
+
+    assert budget_through(extended, short_end) == budget_through(short, short_end)
+    assert all_rows(extended.acquisition_spend)[: len(all_rows(short.acquisition_spend))] == (
+        all_rows(short.acquisition_spend)
+    )
+
+
+def test_a_default_charges_off_every_credit_account_of_the_customer():
+    data = simulate(Settings(start_month=FIRST_MONTH, end_month=month_index(2025, 12), scale=0.4))
+    status_by_customer: dict[str, set[tuple[str, str]]] = {}
+    for row in data.accounts:
+        customer_id, product_id, closed_date, status = row[1], row[2], row[4], row[5]
+        status_by_customer.setdefault(customer_id, set()).add((product_id, closed_date, status))
+    defaulted = [
+        rows for rows in status_by_customer.values() if any(r[2] == "charged_off" for r in rows)
+    ]
+    assert defaulted, "the simulation should produce at least one default"
+    for rows in defaulted:
+        default_date = next(r[1] for r in rows if r[2] == "charged_off")
+        for product_id, closed_date, status in rows:
+            is_credit = cfg.PRODUCTS[product_id].balance_side == "asset"
+            if is_credit and closed_date == default_date:
+                assert status == "charged_off"
+
 
 def test_injected_problems_are_counted_exactly():
     data = simulate(small())

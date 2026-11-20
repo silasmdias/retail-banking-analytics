@@ -26,6 +26,11 @@ from generator import config as cfg
 
 TREND_ANCHOR = 2023 * 12  # January 2023: origin of the channel-mix and FTP trends
 
+# Injected problems that make a transaction unusable, so it earns nothing downstream.
+UNUSABLE_TRANSACTION_PROBLEMS = frozenset(
+    {"null_amount", "orphan_account", "before_account_opening", "implausible_amount"}
+)
+
 
 # --------------------------------------------------------------------------- #
 # Month arithmetic. A month is an integer: year * 12 + (month - 1).
@@ -95,6 +100,9 @@ class Dataset:
     revenue_budget: dict[int, list[tuple]] = field(default_factory=lambda: defaultdict(list))
     # (month, product_id, sales_channel) -> revenue of clean records
     revenue_truth: dict[tuple, float] = field(default_factory=lambda: defaultdict(float))
+    # Same grain, but counting transactions that have not posted yet. The budget is derived
+    # from it, so a month's plan does not change when late transactions arrive.
+    planning_basis: dict[tuple, float] = field(default_factory=lambda: defaultdict(float))
     revenue_truth_by_type: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     new_customers: dict[tuple, int] = field(default_factory=lambda: defaultdict(int))
     dirt_counts: Counter = field(default_factory=Counter)
@@ -249,7 +257,7 @@ class CustomerSimulation:
                     first_day,
                     last_day,
                     fraction=(last_day - first_day + 1) / days,
-                    default=account is defaulted,
+                    default=defaulted is not None and account.product.balance_side == "asset",
                     churn=churned,
                 )
 
@@ -257,7 +265,11 @@ class CustomerSimulation:
                 closing = date(month // 12, month_number(month), end_day)
                 for account in self.accounts:
                     if account.status == "open":
-                        account.status = "charged_off" if account is defaulted else "closed"
+                        # A default ends the relationship: all credit is charged off together.
+                        written_off = (
+                            defaulted is not None and account.product.balance_side == "asset"
+                        )
+                        account.status = "charged_off" if written_off else "closed"
                         account.closed_date = closing
 
     def churn_hazard(self, tenure: int, open_accounts: int) -> float:
@@ -666,6 +678,13 @@ class CustomerSimulation:
         backdate_days = rng.randint(5, 40)
         implausible = rng.uniform(*cfg.IMPLAUSIBLE_AMOUNT_RANGE)
 
+        interchange = 0.0
+        earns_interchange = transaction_type in ("purchase", "debit_purchase")
+        if earns_interchange and problem not in UNUSABLE_TRANSACTION_PROBLEMS:
+            interchange = amount * account.product.interchange_rate
+            # The plan covers everything a month earns, whether or not it has posted yet.
+            self.add_planned_revenue(account, month, interchange)
+
         if posted_month > self.settings.end_month:
             data.pending_late_arrivals += 1
             return ""
@@ -673,18 +692,16 @@ class CustomerSimulation:
         account_id = account.account_id
         date_text = transaction_date.isoformat()
         amount_text = f"{amount:.2f}"
-        rejected = False
         if problem == "alternate_date_format":
             date_text = transaction_date.strftime("%m/%d/%Y")
         elif problem == "null_amount":
-            amount_text, rejected = "", True
+            amount_text = ""
         elif problem == "orphan_account":
-            account_id, rejected = f"ACC-9{orphan_suffix:05d}-01", True
+            account_id = f"ACC-9{orphan_suffix:05d}-01"
         elif problem == "before_account_opening":
             date_text = (account.opened_date - timedelta(days=backdate_days)).isoformat()
-            rejected = True
         elif problem == "implausible_amount":
-            amount_text, rejected = f"{implausible:.2f}", True
+            amount_text = f"{implausible:.2f}"
         elif problem == "negative_amount":
             amount_text = f"{-amount:.2f}"
         if problem:
@@ -707,11 +724,8 @@ class CustomerSimulation:
         if problem == "duplicate_transaction":
             rows.append(row)
 
-        earns_interchange = transaction_type in ("purchase", "debit_purchase")
-        if earns_interchange and not rejected:
-            self.add_revenue(
-                account, month, "interchange", amount * account.product.interchange_rate
-            )
+        if interchange:
+            self.add_revenue(account, month, "interchange", interchange, planned=True)
         return transaction_id
 
     def emit_fee(
@@ -807,7 +821,23 @@ class CustomerSimulation:
             net_interest = funds_transfer - customer_interest
         self.add_revenue(account, month, "net_interest_income", net_interest)
 
-    def add_revenue(self, account: Account, month: int, revenue_type: str, amount: float) -> None:
+    def add_planned_revenue(self, account: Account, month: int, amount: float) -> None:
+        if not self.is_test:
+            key = (month, account.product.product_id, account.sales_channel)
+            self.data.planning_basis[key] += amount
+
+    def add_revenue(
+        self,
+        account: Account,
+        month: int,
+        revenue_type: str,
+        amount: float,
+        *,
+        planned: bool = False,
+    ) -> None:
+        """Adds to the control totals, and to the planning basis unless already counted there."""
+        if not planned:
+            self.add_planned_revenue(account, month, amount)
         if self.is_test:
             return
         key = (month, account.product.product_id, account.sales_channel)
@@ -934,7 +964,7 @@ def _add_revenue_budget(settings: Settings, data: Dataset) -> None:
     monthly noise, so the budget-versus-actual report has real variances to show.
     One product and channel pair was never planned in 2023.
     """
-    for (month, product_id, channel), revenue in sorted(data.revenue_truth.items()):
+    for (month, product_id, channel), revenue in sorted(data.planning_basis.items()):
         year = month // 12
         if (product_id, channel, year) == ("SAV_HY", "partner", 2023):
             continue

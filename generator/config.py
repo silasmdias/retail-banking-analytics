@@ -42,8 +42,8 @@ PRODUCTS = {
     for p in (
         Product("CHK_STD", "Everyday Checking", "checking", "liability", 0.0040),
         Product("SAV_HY", "High-Yield Savings", "savings", "liability", 0.0),
-        Product("CC_STD", "Cashback Credit Card", "credit_card", "asset", 0.0165),
-        Product("CC_PREM", "Premium Rewards Credit Card", "credit_card", "asset", 0.0210),
+        Product("CC_STD", "Classic Credit Card", "credit_card", "asset", 0.0165),
+        Product("CC_PREM", "Premium Credit Card", "credit_card", "asset", 0.0210),
         Product("PL_STD", "Personal Loan", "personal_loan", "asset", 0.0),
     )
 }

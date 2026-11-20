@@ -20,7 +20,11 @@ vars:
   # Customer lifetime value assumptions. See the `customer_lifetime_value` docs block.
   clv_horizon_months: 60
   clv_annual_discount_rate: 0.10
+  # Ages above this share one pooled retention rate and margin.
   clv_mature_age_months: 24
+  # Notional customer-months at the all-channel rate blended into each channel's history.
+  clv_credibility_customer_months: 500
+  clv_loss_credibility_customer_months: 5000
 
 models:
   retail_banking:

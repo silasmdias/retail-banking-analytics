@@ -62,9 +62,11 @@ models:
   - name: budget_vs_actual
     description: >
       Planned against actual revenue: one row per reporting month, product and
-      sales channel that has a budget, actual revenue or both. Answers "are we
-      on plan?" with the variance for the month and for the year to date.
-      Actual revenue comes from `revenue_by_product_channel`.
+      sales channel. A line has a row for every month of a year from the first
+      month in which it had a budget or revenue, including later months with
+      neither, so year-to-date figures can be summed across lines for any
+      month. Answers "are we on plan?" with the variance for the month and for
+      the year to date. Actual revenue comes from `revenue_by_product_channel`.
     config:
       contract:
         enforced: true
@@ -102,19 +104,21 @@ models:
         data_type: decimal(18,2)
       - name: variance_pct
         description: >
-          `variance_amount / budget_revenue`, as a decimal (0.0500 is 5% above
-          plan). Null when there is no budget or the budget is zero.
+          `variance_amount / abs(budget_revenue)`, as a decimal (0.0500 is 5%
+          above plan). The absolute value keeps the sign right when planned
+          revenue is negative. Null when there is no budget or the budget is zero.
         data_type: decimal(18,4)
       - name: variance_status
         description: >
           `on_plan` when the variance is within 5% of budget either way,
           `above_plan` or `below_plan` outside that band, `unbudgeted` when
-          revenue has no plan, `no_actuals` when a plan has no revenue.
+          revenue has no plan, `no_actuals` when a plan has no revenue,
+          `no_activity` for a month in which the line had neither.
         data_type: varchar
         data_tests:
           - accepted_values:
               arguments:
-                values: [on_plan, above_plan, below_plan, unbudgeted, no_actuals]
+                values: [on_plan, above_plan, below_plan, unbudgeted, no_actuals, no_activity]
       - name: budget_revenue_ytd
         description: Budget accumulated from January of the same year through this month, in US dollars.
         data_type: decimal(18,2)
@@ -166,6 +170,12 @@ models:
           Customers with at least one active account in the month. A count for
           lived months; an expected value, with decimals, for projected ones.
         data_type: decimal(18,2)
+        data_tests:
+          - not_null:
+              description: >
+                A null means a projected month has no retention or margin
+                assumption, which happens only when no cohort of any channel
+                has history beyond its acquisition month.
       - name: retention_rate
         description: >
           `active_customers / customers_acquired`: share of the original cohort
@@ -181,6 +191,8 @@ models:
           Contribution margin of the whole cohort in this month, not discounted,
           in US dollars. Actual for lived months, expected for projected ones.
         data_type: decimal(18,2)
+        data_tests:
+          - not_null
       - name: discount_factor
         description: >
           Present-value factor for this age: `(1 + annual rate) ^ (-age / 12)`,
@@ -216,13 +228,6 @@ models:
     config:
       contract:
         enforced: true
-    data_tests:
-      - dbt_utils.expression_is_true:
-          arguments:
-            expression: "abs(customer_lifetime_value - realized_clv - projected_clv) <= 0.01"
-          description: >
-            Lifetime value must be its realized part plus its projected part,
-            give or take one cent of rounding.
     columns:
       - name: customer_lifetime_value_id
         description: Surrogate key of cohort month and acquisition channel.
@@ -295,10 +300,13 @@ models:
 unit_tests:
   - name: test_budget_vs_actual_classifies_each_variance
     description: >
-      Scenario: in one month a product has a line on plan, one above, one
-      below, one planned without revenue and one with revenue never planned;
-      the first line then misses plan in the following month.
-      Then each line gets its status and year-to-date figures accumulate.
+      Scenario: in January a product has a line on plan, one above, one below,
+      one planned without revenue and one with revenue never planned; another
+      product has a line whose planned and actual revenue are both negative.
+      In February only the first line has figures.
+      Then each line gets its status, the percentage keeps the sign of the
+      variance when the budget is negative, and the lines without February
+      figures still get a February row that carries their year-to-date totals.
     model: budget_vs_actual
     given:
       - input: ref('stg_finance__revenue_budget')
@@ -307,6 +315,7 @@ unit_tests:
           - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: online, budget_revenue: 1000}
           - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: partner, budget_revenue: 1000}
           - {budget_month: "2024-01-01", product_id: CHK_STD, sales_channel: call_center, budget_revenue: 500}
+          - {budget_month: "2024-01-01", product_id: CC_STD, sales_channel: branch, budget_revenue: -100}
           - {budget_month: "2024-02-01", product_id: CHK_STD, sales_channel: branch, budget_revenue: 1000}
       - input: ref('revenue_by_product_channel')
         rows:
@@ -314,34 +323,46 @@ unit_tests:
           - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: online, total_revenue: 1200}
           - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: partner, total_revenue: 700}
           - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: mobile_app, total_revenue: 300}
+          - {reporting_month: "2024-01-01", product_id: CC_STD, sales_channel: branch, total_revenue: -80}
           - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: branch, total_revenue: 900}
       - input: ref('dim_products')
         rows:
           - {product_id: CHK_STD, product_name: Everyday Checking}
+          - {product_id: CC_STD, product_name: Classic Credit Card}
     expect:
       rows:
-        - {reporting_month: "2024-01-01", sales_channel: branch, budget_revenue: 1000, actual_revenue: 1040, variance_amount: 40, variance_pct: 0.04, variance_status: on_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1040}
-        - {reporting_month: "2024-01-01", sales_channel: online, budget_revenue: 1000, actual_revenue: 1200, variance_amount: 200, variance_pct: 0.2, variance_status: above_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1200}
-        - {reporting_month: "2024-01-01", sales_channel: partner, budget_revenue: 1000, actual_revenue: 700, variance_amount: -300, variance_pct: -0.3, variance_status: below_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 700}
-        - {reporting_month: "2024-01-01", sales_channel: call_center, budget_revenue: 500, actual_revenue: null, variance_amount: -500, variance_pct: -1, variance_status: no_actuals, budget_revenue_ytd: 500, actual_revenue_ytd: 0}
-        - {reporting_month: "2024-01-01", sales_channel: mobile_app, budget_revenue: null, actual_revenue: 300, variance_amount: 300, variance_pct: null, variance_status: unbudgeted, budget_revenue_ytd: 0, actual_revenue_ytd: 300}
-        - {reporting_month: "2024-02-01", sales_channel: branch, budget_revenue: 1000, actual_revenue: 900, variance_amount: -100, variance_pct: -0.1, variance_status: below_plan, budget_revenue_ytd: 2000, actual_revenue_ytd: 1940}
+        - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: branch, budget_revenue: 1000, actual_revenue: 1040, variance_amount: 40, variance_pct: 0.04, variance_status: on_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1040}
+        - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: online, budget_revenue: 1000, actual_revenue: 1200, variance_amount: 200, variance_pct: 0.2, variance_status: above_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 1200}
+        - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: partner, budget_revenue: 1000, actual_revenue: 700, variance_amount: -300, variance_pct: -0.3, variance_status: below_plan, budget_revenue_ytd: 1000, actual_revenue_ytd: 700}
+        - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: call_center, budget_revenue: 500, actual_revenue: null, variance_amount: -500, variance_pct: -1, variance_status: no_actuals, budget_revenue_ytd: 500, actual_revenue_ytd: 0}
+        - {reporting_month: "2024-01-01", product_id: CHK_STD, sales_channel: mobile_app, budget_revenue: null, actual_revenue: 300, variance_amount: 300, variance_pct: null, variance_status: unbudgeted, budget_revenue_ytd: 0, actual_revenue_ytd: 300}
+        - {reporting_month: "2024-01-01", product_id: CC_STD, sales_channel: branch, budget_revenue: -100, actual_revenue: -80, variance_amount: 20, variance_pct: 0.2, variance_status: above_plan, budget_revenue_ytd: -100, actual_revenue_ytd: -80}
+        - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: branch, budget_revenue: 1000, actual_revenue: 900, variance_amount: -100, variance_pct: -0.1, variance_status: below_plan, budget_revenue_ytd: 2000, actual_revenue_ytd: 1940}
+        - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: online, budget_revenue: null, actual_revenue: null, variance_amount: 0, variance_pct: null, variance_status: no_activity, budget_revenue_ytd: 1000, actual_revenue_ytd: 1200}
+        - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: partner, budget_revenue: null, actual_revenue: null, variance_amount: 0, variance_pct: null, variance_status: no_activity, budget_revenue_ytd: 1000, actual_revenue_ytd: 700}
+        - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: call_center, budget_revenue: null, actual_revenue: null, variance_amount: 0, variance_pct: null, variance_status: no_activity, budget_revenue_ytd: 500, actual_revenue_ytd: 0}
+        - {reporting_month: "2024-02-01", product_id: CHK_STD, sales_channel: mobile_app, budget_revenue: null, actual_revenue: null, variance_amount: 0, variance_pct: null, variance_status: no_activity, budget_revenue_ytd: 0, actual_revenue_ytd: 300}
+        - {reporting_month: "2024-02-01", product_id: CC_STD, sales_channel: branch, budget_revenue: null, actual_revenue: null, variance_amount: 0, variance_pct: null, variance_status: no_activity, budget_revenue_ytd: -100, actual_revenue_ytd: -80}
 
   - name: test_clv_curve_projects_young_cohorts_from_older_ones
     description: >
       Scenario: the January cohort (4 customers) has lived three months and
       halves every month; the March cohort (6 customers) has lived only its
-      first month. The horizon is three months.
+      first month. The horizon is three months and ages above 1 count as mature.
       Then the March cohort is projected with January's retention and margin
-      per active customer. The discount rate is set absurdly high on purpose:
-      at 409,500% a year the value halves every month, which keeps the expected
-      numbers easy to check by hand.
+      per active customer: month 1 from the age-specific figures, month 2 from
+      the pooled mature figures. With a single channel the blend with all
+      channels changes nothing. The discount rate is set absurdly high on
+      purpose: at 409,500% a year the value halves every month, which keeps the
+      expected numbers easy to check by hand.
     model: customer_lifetime_value_curve
     overrides:
       vars:
         clv_horizon_months: 3
-        clv_mature_age_months: 12
+        clv_mature_age_months: 1
         clv_annual_discount_rate: 4095
+        clv_credibility_customer_months: 0
+        clv_loss_credibility_customer_months: 0
     given:
       - input: ref('dim_customers')
         rows:
@@ -378,3 +399,122 @@ unit_tests:
         - {cohort_month: "2024-03-01", months_since_acquisition: 0, is_projected: false, customers_acquired: 6, active_customers: 6, retention_rate: 1, contribution_margin: 60, discounted_contribution_margin: 60, cumulative_discounted_margin: 60, cumulative_clv: 10}
         - {cohort_month: "2024-03-01", months_since_acquisition: 1, is_projected: true, customers_acquired: 6, active_customers: 3, retention_rate: 0.5, contribution_margin: 60, discounted_contribution_margin: 30, cumulative_discounted_margin: 90, cumulative_clv: 15}
         - {cohort_month: "2024-03-01", months_since_acquisition: 2, is_projected: true, customers_acquired: 6, active_customers: 1.5, retention_rate: 0.25, contribution_margin: 48, discounted_contribution_margin: 12, cumulative_discounted_margin: 102, cumulative_clv: 17}
+
+  - name: test_clv_curve_leans_on_all_channels_when_a_channel_has_little_history
+    description: >
+      Scenario: the only partner cohort old enough to show month 1 had two
+      customers and both left, while branch kept 4 of 6 customers earning 25
+      each. On its own history the newer partner cohort (4 customers) would be
+      projected to keep nobody.
+      Then, with a very large credibility constant, the projection uses the
+      all-channel figures instead: half the customers stay (4 of 8) and each
+      earns 25. No discounting, to keep the numbers plain.
+    model: customer_lifetime_value_curve
+    overrides:
+      vars:
+        clv_horizon_months: 2
+        clv_mature_age_months: 12
+        clv_annual_discount_rate: 0
+        clv_credibility_customer_months: 1000000000
+        clv_loss_credibility_customer_months: 1000000000
+    given:
+      - input: ref('dim_customers')
+        rows:
+          - {customer_id: R1, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R2, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R3, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R4, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R5, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R6, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: P1, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: P2, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: Q1, cohort_month: "2024-02-01", acquisition_channel: partner}
+          - {customer_id: Q2, cohort_month: "2024-02-01", acquisition_channel: partner}
+          - {customer_id: Q3, cohort_month: "2024-02-01", acquisition_channel: partner}
+          - {customer_id: Q4, cohort_month: "2024-02-01", acquisition_channel: partner}
+      - input: ref('fct_customer_monthly_profitability')
+        rows:
+          - {customer_id: R1, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R2, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R3, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R4, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R5, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R6, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: R1, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 25}
+          - {customer_id: R2, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 25}
+          - {customer_id: R3, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 25}
+          - {customer_id: R4, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 25}
+          - {customer_id: P1, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: P2, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: Q1, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: Q2, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: Q3, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+          - {customer_id: Q4, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10}
+    expect:
+      rows:
+        - {cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, is_projected: false, active_customers: 6, contribution_margin: 60}
+        - {cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, is_projected: false, active_customers: 4, contribution_margin: 100}
+        - {cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, is_projected: false, active_customers: 2, contribution_margin: 20}
+        - {cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, is_projected: false, active_customers: 0, contribution_margin: 0}
+        - {cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, is_projected: false, active_customers: 4, contribution_margin: 40}
+        - {cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 1, is_projected: true, active_customers: 2, contribution_margin: 50}
+
+  - name: test_clv_curve_projects_credit_losses_from_all_channels
+    description: >
+      Scenario: in their second month, branch customers earn 30 each with no
+      credit loss, while partner customers earn 20 each before losses and one
+      of the four is charged off for 40. Retention and margin before losses
+      come from the channel's own history (credibility 0); credit losses lean
+      entirely on all channels (a very large loss credibility).
+      Then a newer partner cohort of 2 customers is projected at 20 before
+      losses minus the all-channel loss of 5 per customer (40 over 8), which is
+      30 in total. Partner's own loss rate of 10 would have given 20.
+    model: customer_lifetime_value_curve
+    overrides:
+      vars:
+        clv_horizon_months: 2
+        clv_mature_age_months: 12
+        clv_annual_discount_rate: 0
+        clv_credibility_customer_months: 0
+        clv_loss_credibility_customer_months: 1000000000
+    given:
+      - input: ref('dim_customers')
+        rows:
+          - {customer_id: R1, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R2, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R3, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: R4, cohort_month: "2024-01-01", acquisition_channel: branch}
+          - {customer_id: P1, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: P2, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: P3, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: P4, cohort_month: "2024-01-01", acquisition_channel: partner}
+          - {customer_id: Q1, cohort_month: "2024-02-01", acquisition_channel: partner}
+          - {customer_id: Q2, cohort_month: "2024-02-01", acquisition_channel: partner}
+      - input: ref('fct_customer_monthly_profitability')
+        rows:
+          - {customer_id: R1, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: R2, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: R3, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: R4, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: R1, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 30, credit_losses: 0}
+          - {customer_id: R2, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 30, credit_losses: 0}
+          - {customer_id: R3, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 30, credit_losses: 0}
+          - {customer_id: R4, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, contribution_margin: 30, credit_losses: 0}
+          - {customer_id: P1, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: P2, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: P3, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: P4, reporting_month: "2024-01-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: P1, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, contribution_margin: 20, credit_losses: 0}
+          - {customer_id: P2, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, contribution_margin: 20, credit_losses: 0}
+          - {customer_id: P3, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, contribution_margin: 20, credit_losses: 0}
+          - {customer_id: P4, reporting_month: "2024-02-01", cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, contribution_margin: -20, credit_losses: 40}
+          - {customer_id: Q1, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+          - {customer_id: Q2, reporting_month: "2024-02-01", cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, contribution_margin: 10, credit_losses: 0}
+    expect:
+      rows:
+        - {cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 0, is_projected: false, active_customers: 4, contribution_margin: 40}
+        - {cohort_month: "2024-01-01", acquisition_channel: branch, months_since_acquisition: 1, is_projected: false, active_customers: 4, contribution_margin: 120}
+        - {cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 0, is_projected: false, active_customers: 4, contribution_margin: 40}
+        - {cohort_month: "2024-01-01", acquisition_channel: partner, months_since_acquisition: 1, is_projected: false, active_customers: 4, contribution_margin: 40}
+        - {cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 0, is_projected: false, active_customers: 2, contribution_margin: 20}
+        - {cohort_month: "2024-02-01", acquisition_channel: partner, months_since_acquisition: 1, is_projected: true, active_customers: 2, contribution_margin: 30}

@@ -70,6 +70,10 @@ Fees kept by the bank, in US dollars. Only fees with status `posted` count.
 Waived fees were never collected and reversed fees were refunded, so neither is
 revenue.
 
+A fee counts in the month it is charged. That includes loan origination fees,
+which accrual accounting would spread over the life of the loan. Recognizing
+them at origination raises the margin of a loan's first month.
+
 {% enddocs %}
 
 
@@ -77,7 +81,8 @@ revenue.
 
 Share of card purchase volume paid to the bank by the card network, in US
 dollars: purchase amount times the product's interchange rate. Applies to credit
-card purchases and debit card purchases.
+card purchases and debit card purchases. The fictional cards have no rewards
+program, so there is no rewards cost to net against it.
 
 {% enddocs %}
 
@@ -145,10 +150,19 @@ over a fixed horizon.
    contribution margin of its customers.
 2. *Projected part.* For the remaining months of the horizon, expected margin is
    `customers still active x margin per active customer`. Both come from what
-   older cohorts of the same channel showed at the same age:
-   * up to `clv_mature_age_months` (24), age-specific retention and margin;
-   * beyond it, one pooled retention rate and one pooled margin per active
-     customer, taken from all observed ages above 24 months, held constant.
+   older cohorts showed at the same age:
+   * up to `clv_mature_age_months` (24), each age has its own retention and margin;
+   * beyond it, too few cohorts are old enough to read ages one by one, so all
+     observed ages above 24 months are pooled into one rate, held constant.
+
+   A channel's own history is blended with the history of all channels, in
+   proportion to how much history the channel has. The blend adds a fixed number
+   of notional customer-months at the all-channel rate:
+   `clv_credibility_customer_months` (500) for retention and for margin before
+   credit losses, and `clv_loss_credibility_customer_months` (5,000) for credit
+   losses. Losses are rare and large, so a channel needs far more history
+   before its own loss experience is believed. Without this, a single charge-off
+   in a small channel would set the margin assumed for years of projection.
 3. *Discounting.* Each month is discounted at `clv_annual_discount_rate` (10% a
    year) back to the acquisition month.
 4. *Per customer.* The total is divided by the customers acquired in the
@@ -165,6 +179,9 @@ Horizon: `clv_horizon_months` (60 months).
   history, months 37 to 60 are never observed for any cohort. `is_projected`
   and `projected_clv` keep the two parts apart.
 * The projection ignores calendar effects such as changes in interest rates.
+* Projected credit losses lean on all channels together, so the projected part
+  understates the difference in credit risk between channels. The realized part
+  carries each channel's actual losses.
 
 {% enddocs %}
 

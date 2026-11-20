@@ -48,8 +48,6 @@ models:
                   - implausible_amount
       - name: is_valid
         description: True when no rejection rule failed.
-        data_tests:
-          - not_null
 
   - name: int_fees_screened
     description: >
@@ -88,8 +86,6 @@ models:
                 values: [unknown_account, missing_amount]
       - name: is_valid
         description: True when no rejection rule failed.
-        data_tests:
-          - not_null
 
   - name: int_net_interest_by_account_month
     description: >

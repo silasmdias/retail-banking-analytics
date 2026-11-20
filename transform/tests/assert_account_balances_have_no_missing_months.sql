@@ -21,8 +21,16 @@ balances as (
 
 data_window as (
 
-    select max(balance_month) as last_balance_month
-    from balances
+    -- The last month expected comes from the transaction feed as well, so a balance
+    -- extract that never arrived for the latest month is noticed.
+    select
+        greatest(
+            (select max(balance_month) from balances),
+            (
+                select cast(date_trunc('month', max(posted_date)) as date)
+                from {{ ref('stg_core_banking__transactions') }}
+            )
+        ) as last_balance_month
 
 ),
 

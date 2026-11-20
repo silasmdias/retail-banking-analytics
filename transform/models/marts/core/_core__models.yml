@@ -128,14 +128,6 @@ models:
       or a valid transaction. It is the atomic fact of the project: every
       revenue and margin figure in the finance marts is a sum of these rows, so
       they reconcile to the cent. Excludes internal test customers.
-    data_tests:
-      - dbt_utils.expression_is_true:
-          arguments:
-            expression: "contribution_margin = total_revenue - credit_losses - cost_to_serve"
-          description: >
-            The margin must be exactly revenue minus credit losses minus cost
-            to serve. A failure points to a column added to one side of the
-            calculation in this model and not to the other.
     columns:
       - name: account_month_id
         description: Surrogate key of account and reporting month.

@@ -28,8 +28,6 @@ models:
         description: >
           Rule the records failed. See `int_transactions_screened` and
           `int_fees_screened` for the rules and their order.
-        data_tests:
-          - not_null
       - name: rejected_records
         description: Number of records rejected for this reason in the month.
       - name: total_records

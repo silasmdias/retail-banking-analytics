@@ -1,6 +1,6 @@
 # Retail banking analytics
 
-dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB, with a Dagster pipeline that loads each monthly delivery, checks it and raises alerts, and an MCP server that lets a language model answer questions from the marts, with an evaluation of how often it is right.
+dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB, with a Dagster pipeline that loads each monthly delivery, checks it and raises alerts, and an MCP server that lets a language model answer questions from the marts, with an evaluation built to measure how often it is right.
 
 The project answers three questions a retail banking finance team asks every month:
 
@@ -331,12 +331,12 @@ Only the raw layer is incremental. dbt rebuilds every model on each run: it take
 
 ## Questions in plain language
 
-An MCP server lets a language model answer business questions from the marts and their dbt documentation, and from nothing else. An evaluation measures how often the answers are right.
+An MCP server lets a language model answer business questions from the marts and their dbt documentation, and from nothing else. An evaluation is built to measure how often the answers are right. It has not been run on a model yet: [Results](#results) says what exists and what does not.
 
 The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is the standard way to hand tools to a language model. dbt Labs maintains [an official MCP server](https://github.com/dbt-labs/dbt-mcp), and for a team on the dbt platform that is the one to use. The server here is small on purpose. It shows two things the official one leaves to whoever runs it:
 
 - **A fence.** Run locally without a dbt platform account, the official server offers the dbt commands (checked against its documentation in November 2026). `show` runs any SQL with the credentials dbt itself writes with, and `build` and `run` change the warehouse. Its read-only query tool, its documentation tools and its metrics tools need the platform. Here the model can read the ten marts and can reach nothing else, because nothing else is there.
-- **A measurement.** 44 questions with reference answers computed from the warehouse, graded by a program, so "the model answers correctly" is a number with a method behind it.
+- **A way to measure.** 44 questions with reference answers computed from the warehouse, graded by a program, so that "the model answers correctly" can be a number with a method behind it. The method is here and tested. The run that produces the number calls a paid API and has not been made.
 
 ```mermaid
 flowchart LR
@@ -510,7 +510,7 @@ Always saying "cannot be answered": 9 of 44 correct
 Always answering zero, "no" or "unknown": 2 of 44 correct
 ```
 
-Then it regrades every recorded run from the answers stored in the repository and prints the tables below, so the published figures can be checked without paying for a model.
+Then it regrades every recorded run from the answers stored in the repository and prints its tables, so that a published figure can be checked without paying for a model.
 
 ```bash
 export ANTHROPIC_API_KEY=...
@@ -521,10 +521,21 @@ This part calls a model, Claude Opus 5.5 unless another is named, and costs mone
 
 ### Results
 
-No model run is recorded yet.
+No model has been run through the evaluation, so there is no accuracy figure to report. A run costs money, and none has been paid for. This is what exists today, and what does not:
+
+| | State |
+| --- | --- |
+| Questions, answer key and grader | Checked by `make eval`, which is a step of the CI workflow. The three answer sheets above are the reference points for any future result: a model that always says "cannot be answered" scores 9 of 44 |
+| The loop a model answers through | Tested with a scripted stand-in for the model that goes through the paid command end to end: it records answers, resumes a run, stops at the spending limit and keeps a failed call apart from a wrong answer |
+| A real client with a real model | Three questions through Claude Code, described under [Connect a client](#connect-a-client). All three went as designed. Three questions are an anecdote |
+| A call to the model API from the evaluation | Never made. The request was checked against the installed SDK, and the first real run may still need a fix |
+| An accuracy figure, with and without the documentation | Not measured |
+
+`make eval-live` records a run under `assistant/evals/results/`: the answer to each question, the SQL the model wrote and the tokens it used. From then on `make eval` prints, for each of the two servers, the share of correct answers with its interval, the share of wrong answers, the share by kind of question, and the cost.
 
 ### Limits of the evaluation
 
+- It has not been run on a model. Everything below is about what a result would and would not mean.
 - The questions were written by the person who wrote the models and their documentation. They ask for what the marts were built to answer, in the marts' own vocabulary. People ask vaguer questions.
 - Every question states its unit, its precision and its period. A real question rarely does, and choosing them is part of the work.
 - The answer key is SQL written by the same person. A second query confirms six of the answers. A wrong reference query would count against the model.
@@ -604,6 +615,7 @@ uv run python -m generator --help
 
 ## Next steps
 
+- Record a run of the evaluation on a model and publish its table.
 - Run the same questions through the official dbt MCP server, limited to its `show` tool, as a third column of the evaluation.
 - Add questions phrased the way people ask them, without unit, precision or period, and grade whether the model asks or assumes.
 

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := build
 .PHONY: build setup generate load dbt test lint docs clean \
 	orchestrate demo-new-month demo-broken-month pipeline test-orchestration \
-	assistant demo-assistant test-assistant \
+	assistant demo-assistant test-assistant eval eval-live \
 	setup-orchestration setup-assistant manifest
 
 # Dagster keeps its run history here, so runs started from the command line and
@@ -73,6 +73,14 @@ demo-assistant: setup-assistant manifest data/warehouse.duckdb
 ## test-assistant: run the tests of the server and of the evaluation
 test-assistant: setup-assistant manifest
 	$(ASSISTANT) pytest -q assistant/tests
+
+## eval: check the answer key and regrade the recorded model runs, without calling a model
+eval: setup-assistant manifest data/warehouse.duckdb
+	$(ASSISTANT) python -m assistant.evals check
+
+## eval-live: have a model answer the questions; needs ANTHROPIC_API_KEY and costs money
+eval-live: setup-assistant manifest data/warehouse.duckdb
+	$(ASSISTANT) python -m assistant.evals live $(ARGS)
 
 ## clean: remove generated data, the local warehouse, run history and dbt artifacts
 clean:

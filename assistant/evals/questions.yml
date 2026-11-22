@@ -1,0 +1,435 @@
+# The evaluation set: questions a finance team could ask, each with a way to
+# know the right answer.
+#
+#   id             stable name of the case
+#   category       lookup        a figure read from the marts with a filter, a sum or a ratio
+#                  aggregation   a figure that a plausible but wrong query also produces
+#                  definition    a fact stated in the dbt documentation
+#                  unanswerable  something the marts and their documentation cannot answer;
+#                                the right response is to say so
+#   question       what the model is asked
+#   answer.type    number | label | yes_no | breakdown: the shape the answer must have.
+#                  Unanswerable cases have one too, so the shape gives nothing away.
+#   answer.tolerance   how far a number may be from the reference, in the answer's own unit.
+#                  One unit of the last digit asked for, so rounding and truncation both pass.
+#   reference_sql  query over the marts that produces the right answer. The answer key is
+#                  computed from the warehouse with it, never typed in.
+#   check_sql      a second query, through other tables, that must give the same answer
+#   naive_sql      the plausible wrong query. Its result must be graded as wrong, which
+#                  proves the case can tell the two apart.
+#   expected       the right answer when it is a fact of the documentation, not a query
+#   why            what the case is there to catch
+
+# --------------------------------------------------------------------------- #
+# lookup
+# --------------------------------------------------------------------------- #
+
+- id: total-revenue-2025
+  category: lookup
+  question: What was the bank's total revenue in 2025? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(total_revenue) FROM marts.revenue_by_product_channel
+    WHERE year(reporting_month) = 2025
+  check_sql: |
+    SELECT sum(total_revenue) FROM marts.fct_account_monthly_profitability
+    WHERE year(reporting_month) = 2025
+
+- id: revenue-2025-by-product
+  category: lookup
+  question: What was total revenue in 2025 for each product? Answer in US dollars, to the nearest dollar.
+  answer: {type: breakdown, by: product name, tolerance: 1}
+  reference_sql: |
+    SELECT product_name, sum(total_revenue) FROM marts.revenue_by_product_channel
+    WHERE year(reporting_month) = 2025 GROUP BY product_name
+  check_sql: |
+    SELECT p.product_name, sum(f.total_revenue)
+    FROM marts.fct_account_monthly_profitability f
+    JOIN marts.dim_products p USING (product_id)
+    WHERE year(f.reporting_month) = 2025 GROUP BY p.product_name
+
+- id: top-product-2025
+  category: lookup
+  question: Which product generated the most total revenue in 2025? Answer with the product name.
+  answer: {type: label}
+  reference_sql: |
+    SELECT product_name FROM marts.revenue_by_product_channel
+    WHERE year(reporting_month) = 2025
+    GROUP BY product_name ORDER BY sum(total_revenue) DESC LIMIT 1
+
+- id: checking-fees-2024
+  category: lookup
+  question: How much fee revenue did the Everyday Checking product generate in 2024? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(fee_revenue) FROM marts.revenue_by_product_channel
+    WHERE product_name = 'Everyday Checking' AND year(reporting_month) = 2024
+
+- id: customers-acquired-mobile
+  category: lookup
+  question: How many customers has the bank acquired through the mobile app since it started?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.dim_customers WHERE acquisition_channel = 'mobile_app'
+  check_sql: |
+    SELECT sum(customers_acquired) FROM marts.customer_lifetime_value
+    WHERE acquisition_channel = 'mobile_app'
+
+- id: open-accounts
+  category: lookup
+  question: How many accounts are open as of the latest data?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.dim_accounts WHERE account_status = 'open'
+
+- id: charged-off-customers
+  category: lookup
+  question: How many customers have been charged off?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.dim_customers WHERE customer_status = 'charged_off'
+
+- id: loan-budget-2025
+  category: lookup
+  question: What revenue was budgeted for the Personal Loan product in 2025? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(budget_revenue) FROM marts.budget_vs_actual
+    WHERE product_name = 'Personal Loan' AND year(reporting_month) = 2025
+
+- id: branch-acquisition-spend-2024
+  category: lookup
+  question: How much did the bank spend on sales and marketing to acquire customers through branches in 2024? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(acquisition_spend) FROM marts.customer_lifetime_value
+    WHERE acquisition_channel = 'branch' AND year(cohort_month) = 2024
+  why: >
+    Sounds like something only finance's own files would hold, but the spend is a
+    column of the lifetime value mart. Checks that the model looks before giving up.
+
+- id: premium-card-interchange-rate
+  category: lookup
+  question: What interchange rate does the Premium Credit Card earn on purchases? Answer as a percentage with one decimal, for example 1.5.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * interchange_rate FROM marts.dim_products
+    WHERE product_name = 'Premium Credit Card'
+
+- id: loans-opened-2025
+  category: lookup
+  question: How many personal loan accounts were opened in 2025?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.dim_accounts
+    WHERE product_category = 'personal_loan' AND year(opened_date) = 2025
+
+- id: valid-transactions-2025
+  category: lookup
+  question: How many valid transactions did customers make in 2025?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT sum(transaction_count) FROM marts.fct_account_monthly_profitability
+    WHERE year(reporting_month) = 2025
+
+- id: lines-below-plan-december-2025
+  category: lookup
+  question: In December 2025, how many product and sales channel lines were below plan?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.budget_vs_actual
+    WHERE reporting_month = DATE '2025-12-01' AND variance_status = 'below_plan'
+
+# --------------------------------------------------------------------------- #
+# aggregation
+# --------------------------------------------------------------------------- #
+
+- id: clv-all-customers
+  category: aggregation
+  question: Taking every acquisition cohort and channel together, what is the 60-month customer lifetime value per acquired customer? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(realized_discounted_margin + projected_discounted_margin) / sum(customers_acquired)
+    FROM marts.customer_lifetime_value
+  check_sql: |
+    SELECT sum(cumulative_discounted_margin) / sum(customers_acquired)
+    FROM marts.customer_lifetime_value_curve
+    WHERE months_since_acquisition = (SELECT max(months_since_acquisition) FROM marts.customer_lifetime_value_curve)
+  naive_sql: |
+    SELECT avg(customer_lifetime_value) FROM marts.customer_lifetime_value
+  why: >
+    Averaging the per-customer column gives every cohort the same weight, whatever its
+    size. The model description says to sum the totals and divide.
+
+- id: clv-branch
+  category: aggregation
+  question: What is the 60-month customer lifetime value per customer acquired through the branch channel, all cohorts together? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(realized_discounted_margin + projected_discounted_margin) / sum(customers_acquired)
+    FROM marts.customer_lifetime_value WHERE acquisition_channel = 'branch'
+  naive_sql: |
+    SELECT avg(customer_lifetime_value) FROM marts.customer_lifetime_value
+    WHERE acquisition_channel = 'branch'
+  why: The same trap as above, where the wrong answer is only four dollars away.
+
+- id: cac-all-customers
+  category: aggregation
+  question: What is the customer acquisition cost across every cohort and channel? Answer in US dollars per customer, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(acquisition_spend) / sum(customers_acquired) FROM marts.customer_lifetime_value
+  naive_sql: |
+    SELECT avg(customer_acquisition_cost) FROM marts.customer_lifetime_value
+
+- id: clv-to-cac-mobile
+  category: aggregation
+  question: What is the ratio of 60-month customer lifetime value to acquisition cost for the mobile app channel, all cohorts together? Answer with one decimal.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT sum(realized_discounted_margin + projected_discounted_margin) / sum(acquisition_spend)
+    FROM marts.customer_lifetime_value WHERE acquisition_channel = 'mobile_app'
+  naive_sql: |
+    SELECT avg(clv_to_cac_ratio) FROM marts.customer_lifetime_value
+    WHERE acquisition_channel = 'mobile_app'
+
+- id: realized-share-of-clv-branch
+  category: aggregation
+  question: For the branch channel, all cohorts together, what share of the 60-month customer lifetime value has already been realized? Answer as a percentage with one decimal.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * sum(realized_discounted_margin)
+           / sum(realized_discounted_margin + projected_discounted_margin)
+    FROM marts.customer_lifetime_value WHERE acquisition_channel = 'branch'
+  naive_sql: |
+    SELECT 100 * avg(realized_clv / customer_lifetime_value)
+    FROM marts.customer_lifetime_value WHERE acquisition_channel = 'branch'
+
+- id: revenue-per-checking-account-december-2025
+  category: aggregation
+  question: In December 2025, what was the revenue per active account of the Everyday Checking product, across all sales channels? Answer in US dollars, to the cent.
+  answer: {type: number, tolerance: 0.01}
+  reference_sql: |
+    SELECT sum(total_revenue) / sum(active_accounts) FROM marts.revenue_by_product_channel
+    WHERE product_name = 'Everyday Checking' AND reporting_month = DATE '2025-12-01'
+  naive_sql: |
+    SELECT avg(revenue_per_active_account) FROM marts.revenue_by_product_channel
+    WHERE product_name = 'Everyday Checking' AND reporting_month = DATE '2025-12-01'
+  why: The column description says not to sum or average it across rows.
+
+- id: revenue-year-to-date-june-2025
+  category: aggregation
+  question: What was the bank's actual revenue for 2025 year to date at the end of June 2025? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(actual_revenue_ytd) FROM marts.budget_vs_actual
+    WHERE reporting_month = DATE '2025-06-01'
+  check_sql: |
+    SELECT sum(total_revenue) FROM marts.revenue_by_product_channel
+    WHERE reporting_month BETWEEN DATE '2025-01-01' AND DATE '2025-06-01'
+  naive_sql: |
+    SELECT sum(actual_revenue_ytd) FROM marts.budget_vs_actual
+    WHERE reporting_month BETWEEN DATE '2025-01-01' AND DATE '2025-06-01'
+  why: A year-to-date column is summed across lines for one month, never across months.
+
+- id: budget-variance-percent-2025
+  category: aggregation
+  question: By what percentage did the bank's total 2025 revenue differ from its 2025 budget? Answer as a percentage with one decimal, negative when revenue was below budget.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * sum(variance_amount) / sum(budget_revenue) FROM marts.budget_vs_actual
+    WHERE year(reporting_month) = 2025
+  naive_sql: |
+    SELECT 100 * avg(variance_pct) FROM marts.budget_vs_actual
+    WHERE year(reporting_month) = 2025
+
+- id: retention-january-2023-cohort-month-12
+  category: aggregation
+  question: What share of the customers acquired in January 2023, across all channels, were still active 12 months after acquisition? Answer as a percentage with one decimal.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * sum(active_customers) / sum(customers_acquired)
+    FROM marts.customer_lifetime_value_curve
+    WHERE cohort_month = DATE '2023-01-01' AND months_since_acquisition = 12
+  naive_sql: |
+    SELECT 100 * avg(retention_rate) FROM marts.customer_lifetime_value_curve
+    WHERE cohort_month = DATE '2023-01-01' AND months_since_acquisition = 12
+
+- id: transaction-rejection-rate
+  category: aggregation
+  question: Of all the transaction records the source systems delivered from January 2023 to December 2025, what share did the pipeline reject? Answer as a percentage with two decimals.
+  answer: {type: number, tolerance: 0.01}
+  reference_sql: |
+    SELECT 100 * sum(rejected) / sum(delivered)
+    FROM (
+        SELECT record_month, sum(rejected_records) AS rejected, max(total_records) AS delivered
+        FROM marts.dq_rejected_records
+        WHERE source_table = 'transactions'
+        GROUP BY record_month
+    )
+  naive_sql: |
+    SELECT 100 * sum(rejected_records) / sum(total_records) FROM marts.dq_rejected_records
+    WHERE source_table = 'transactions'
+  why: >
+    `total_records` repeats on every reason of a month, so summing it counts each month's
+    records several times. The column description says so.
+
+- id: active-customers-december-2025
+  category: aggregation
+  question: How many customers had at least one active account in December 2025?
+  answer: {type: number, tolerance: 0}
+  reference_sql: |
+    SELECT count(*) FROM marts.fct_customer_monthly_profitability
+    WHERE reporting_month = DATE '2025-12-01'
+  naive_sql: |
+    SELECT count(*) FROM marts.dim_customers WHERE customer_status = 'active'
+  why: >
+    `customer_status` says who has an open account as of the latest load, which is not
+    who was active in a given month.
+
+- id: revenue-growth-2025
+  category: lookup
+  question: By what percentage did total revenue grow from 2024 to 2025? Answer as a percentage with one decimal.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * (sum(total_revenue) FILTER (WHERE year(reporting_month) = 2025)
+                  / sum(total_revenue) FILTER (WHERE year(reporting_month) = 2024) - 1)
+    FROM marts.revenue_by_product_channel
+
+- id: credit-losses-share-of-revenue-2025
+  category: lookup
+  question: In 2025, what were credit losses as a percentage of total revenue? Answer with one decimal.
+  answer: {type: number, tolerance: 0.1}
+  reference_sql: |
+    SELECT 100 * sum(credit_losses) / sum(total_revenue)
+    FROM marts.fct_account_monthly_profitability WHERE year(reporting_month) = 2025
+
+- id: contribution-margin-2025
+  category: lookup
+  question: What was the bank's total contribution margin in 2025? Answer in US dollars, to the nearest dollar.
+  answer: {type: number, tolerance: 1}
+  reference_sql: |
+    SELECT sum(contribution_margin) FROM marts.fct_account_monthly_profitability
+    WHERE year(reporting_month) = 2025
+  check_sql: |
+    SELECT sum(contribution_margin) FROM marts.fct_customer_monthly_profitability
+    WHERE year(reporting_month) = 2025
+
+# --------------------------------------------------------------------------- #
+# definition
+# --------------------------------------------------------------------------- #
+
+- id: clv-subtracts-acquisition-cost
+  category: definition
+  question: Is the acquisition cost of a customer already subtracted from the customer lifetime value figures?
+  answer: {type: yes_no}
+  expected: false
+
+- id: waived-fees-count-as-revenue
+  category: definition
+  question: Do fees that were waived count as fee revenue?
+  answer: {type: yes_no}
+  expected: false
+
+- id: churn-lowers-cohort-clv
+  category: definition
+  question: Is the lifetime value of a cohort divided by the customers originally acquired, so that customers who leave lower it?
+  answer: {type: yes_no}
+  expected: true
+
+- id: net-interest-income-can-be-negative
+  category: definition
+  question: Can the net interest income of a credit card account be negative in a month in which the customer pays the balance in full?
+  answer: {type: yes_no}
+  expected: true
+
+- id: clv-discount-rate
+  category: definition
+  question: What annual discount rate is used to calculate customer lifetime value? Answer as a percentage.
+  answer: {type: number, tolerance: 0}
+  expected: 10
+
+- id: clv-horizon
+  category: definition
+  question: Over how many months is customer lifetime value calculated?
+  answer: {type: number, tolerance: 0}
+  expected: 60
+
+- id: on-plan-band
+  category: definition
+  question: Within what percentage of its budget does a line have to be, either way, to be classified as on plan? Answer as a percentage.
+  answer: {type: number, tolerance: 0}
+  expected: 5
+
+- id: clv-pooled-ages
+  category: definition
+  question: In the lifetime value projection, above what age in months do all ages share one pooled retention rate and one pooled margin?
+  answer: {type: number, tolerance: 0}
+  expected: 24
+
+# --------------------------------------------------------------------------- #
+# unanswerable
+# --------------------------------------------------------------------------- #
+
+- id: customer-name
+  category: unanswerable
+  question: What is the full name of customer CUS-000023?
+  answer: {type: label}
+  why: The marts hold no names or contact details.
+
+- id: atm-transactions-2025
+  category: unanswerable
+  question: How many transactions were made at ATMs in 2025?
+  answer: {type: number, tolerance: 0}
+  why: >
+    The channel where a transaction took place is used upstream to cost it, and is
+    described in the documentation, but no mart keeps it.
+
+- id: duplicate-transactions-2025
+  category: unanswerable
+  question: How many duplicate transaction records did the source systems deliver in 2025?
+  answer: {type: number, tolerance: 0}
+  why: >
+    Duplicates are removed in staging and never counted in a mart. The rejected records
+    mart counts records that were refused, which is a different thing.
+
+- id: net-promoter-score-mobile
+  category: unanswerable
+  question: What is the net promoter score of customers acquired through the mobile app?
+  answer: {type: number, tolerance: 0}
+
+- id: mobile-app-logins-december-2025
+  category: unanswerable
+  question: How many customers logged in to the mobile app in December 2025?
+  answer: {type: number, tolerance: 0}
+  why: >
+    The mobile app appears in the marts only as the channel that sold an account. Nothing
+    records who uses it.
+
+- id: loan-to-value-personal-loans
+  category: unanswerable
+  question: What is the average loan-to-value ratio of the personal loan portfolio? Answer as a percentage.
+  answer: {type: number, tolerance: 0.1}
+  why: >
+    In this project LTV means lifetime value, and the documentation says so. There is no
+    collateral data, so a model that returns a lifetime value figure here has confused the two.
+
+- id: net-income-after-tax-2025
+  category: unanswerable
+  question: What was the bank's net income after taxes in 2025? Answer in US dollars.
+  answer: {type: number, tolerance: 1}
+  why: >
+    Contribution margin is the only profit measure, and the documentation says it leaves
+    out taxes, cost of capital and fixed overhead.
+
+- id: revenue-budget-2027
+  category: unanswerable
+  question: What revenue is budgeted for the year 2027? Answer in US dollars.
+  answer: {type: number, tolerance: 1}
+  why: The plan stops where the data stops.
+
+- id: cac-social-media
+  category: unanswerable
+  question: What is the customer acquisition cost of the social media channel? Answer in US dollars per customer.
+  answer: {type: number, tolerance: 1}
+  why: There is no such channel. The accepted values of the channel columns show it.

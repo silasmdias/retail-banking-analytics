@@ -1,0 +1,51 @@
+{
+  "dataset": {
+    "seed": 42,
+    "start_month": "2023-01",
+    "end_month": "2025-12",
+    "scale": 1.0
+  },
+  "answers": {
+    "active-customers-december-2025": 3651.0,
+    "branch-acquisition-spend-2024": 141033.56,
+    "budget-variance-percent-2025": -8.373261613494574,
+    "cac-all-customers": 191.48494153225806,
+    "charged-off-customers": 49.0,
+    "checking-fees-2024": 43504.0,
+    "churn-lowers-cohort-clv": true,
+    "clv-all-customers": 1037.0539455645162,
+    "clv-branch": 1483.6178806907378,
+    "clv-discount-rate": 10,
+    "clv-horizon": 60,
+    "clv-pooled-ages": 24,
+    "clv-subtracts-acquisition-cost": false,
+    "clv-to-cac-mobile": 7.545175261372461,
+    "contribution-margin-2025": 1192585.16,
+    "credit-losses-share-of-revenue-2025": 11.951112910867726,
+    "customers-acquired-mobile": 1697.0,
+    "lines-below-plan-december-2025": 15.0,
+    "loan-budget-2025": 825450.0,
+    "loans-opened-2025": 590.0,
+    "net-interest-income-can-be-negative": true,
+    "on-plan-band": 5,
+    "open-accounts": 5455.0,
+    "premium-card-interchange-rate": 2.1,
+    "realized-share-of-clv-branch": 41.82835111830822,
+    "retention-january-2023-cohort-month-12": 70.29702970297029,
+    "revenue-2025-by-product": {
+      "Personal Loan": 747569.05,
+      "Everyday Checking": 289911.56,
+      "Classic Credit Card": 508513.86,
+      "High-Yield Savings": 53834.93,
+      "Premium Credit Card": 125564.39
+    },
+    "revenue-growth-2025": 87.66999047724191,
+    "revenue-per-checking-account-december-2025": 14.83548031496063,
+    "revenue-year-to-date-june-2025": 749864.47,
+    "top-product-2025": "Personal Loan",
+    "total-revenue-2025": 1725393.79,
+    "transaction-rejection-rate": 0.3166541660373688,
+    "valid-transactions-2025": 693490.0,
+    "waived-fees-count-as-revenue": false
+  }
+}

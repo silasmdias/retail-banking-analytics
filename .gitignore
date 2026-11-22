@@ -5,6 +5,10 @@ data/alerts/
 *.duckdb
 *.duckdb.wal
 
+# Evaluation runs: the answers are committed, the full transcripts and the retries are not
+assistant/evals/results/*/*/traces/
+assistant/evals/results/*/*/errors.jsonl
+
 # dbt
 transform/target/
 transform/dbt_packages/

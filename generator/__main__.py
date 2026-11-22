@@ -42,7 +42,9 @@ def main() -> None:
         parser.error("--end-month must not be earlier than --start-month")
 
     manifest = write_dataset(simulate(settings), settings, args.output_dir)
+    files = manifest.pop("files")
     print(json.dumps(manifest, indent=2))
+    print(f"{len(files)} files written to {args.output_dir}, listed in _manifest.json")
 
 
 if __name__ == "__main__":

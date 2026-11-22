@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 
 from generator import config as cfg
 from generator.simulation import Settings, month_index, simulate
@@ -39,13 +40,14 @@ def test_different_seed_gives_different_data():
 
 
 def test_extending_the_end_month_does_not_rewrite_history():
-    """A later run must only add files, so a scheduled load sees stable history."""
+    """A later run must leave earlier months alone, so a scheduled load sees stable history."""
     short_end = month_index(2023, 6)
     short, extended = simulate(small(end_month=short_end)), simulate(small())
     for month in range(FIRST_MONTH, short_end + 1):
         assert extended.transactions[month] == short.transactions[month]
-        assert extended.fees[month] == short.fees[month]
         assert extended.balances[month] == short.balances[month]
+    for month in range(FIRST_MONTH, short_end):
+        assert extended.fees[month] == short.fees[month]
     assert extended.customers[: len(short.customers)] == short.customers
     assert len(extended.customers) > len(short.customers)
 
@@ -57,6 +59,29 @@ def test_extending_the_end_month_does_not_rewrite_history():
     assert all_rows(extended.acquisition_spend)[: len(all_rows(short.acquisition_spend))] == (
         all_rows(short.acquisition_spend)
     )
+
+
+def test_the_next_month_completes_the_last_fees_file_and_changes_nothing_else_in_it():
+    """A fee can be charged before its transaction posts.
+
+    Until the transaction arrives the fee has no `transaction_id`. The following
+    month delivers the fees file again with that one column filled in, so a loader
+    must be able to take the same file twice.
+    """
+    short_end = month_index(2023, 10)
+    short = simulate(small(end_month=short_end))
+    extended = simulate(small(end_month=short_end + 1))
+    posted_later = {row[0] for row in extended.transactions[short_end + 1]}
+
+    assert len(extended.fees[short_end]) == len(short.fees[short_end])
+    completed = 0
+    for before, after in zip(short.fees[short_end], extended.fees[short_end], strict=True):
+        if before == after:
+            continue
+        completed += 1
+        assert before[2] == "" and after[2] in posted_later
+        assert before[:2] + before[3:] == after[:2] + after[3:]
+    assert completed > 0, "pick settings where at least one fee waits for its transaction"
 
 
 def test_a_default_charges_off_every_credit_account_of_the_customer():
@@ -129,3 +154,32 @@ def test_written_files_match_the_manifest(tmp_path):
             assert tuple(rows[0]) == HEADERS[table]
             written += len(rows) - 1
         assert written == expected
+
+
+def test_the_manifest_lists_every_file_with_its_row_count(tmp_path):
+    """The loader reconciles each delivered file against this list."""
+    settings = small()
+    manifest = write_dataset(simulate(settings), settings, tmp_path)
+    on_disk = {path.relative_to(tmp_path).as_posix() for path in tmp_path.glob("*/*/*.csv")}
+    assert set(manifest["files"]) == on_disk
+    for relative_path, expected in manifest["files"].items():
+        with (tmp_path / relative_path).open(newline="", encoding="utf-8") as handle:
+            assert sum(1 for _ in csv.reader(handle)) - 1 == expected
+    assert sum(manifest["files"].values()) == sum(manifest["rows_written"].values())
+
+
+def test_the_manifest_is_absent_while_files_are_being_rewritten(tmp_path, monkeypatch):
+    """A watcher must never see an old manifest next to half-written files."""
+    settings = small()
+    write_dataset(simulate(settings), settings, tmp_path)
+    seen: list[bool] = []
+    original = shutil.rmtree
+
+    def spy(path, *args, **kwargs):
+        seen.append((tmp_path / "_manifest.json").exists())
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", spy)
+    write_dataset(simulate(settings), settings, tmp_path)
+    assert seen and not any(seen)
+    assert (tmp_path / "_manifest.json").exists()

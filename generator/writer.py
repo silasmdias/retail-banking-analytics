@@ -9,7 +9,13 @@
 <output>/treasury/funds_transfer_rates/funds_transfer_rates.csv
 <output>/finance/acquisition_spend/acquisition_spend_YYYY.csv
 <output>/finance/revenue_budget/revenue_budget_YYYY.csv
-<output>/_manifest.json                                    row counts and control totals
+<output>/_manifest.json                                    control file, written last
+
+The manifest doubles as the control file a source system sends with a batch: it
+lists every file delivered and how many records each one holds, so the receiver
+can tell a complete delivery from a truncated one. It is removed before the
+files are rewritten and written again at the end, so its presence means the
+delivery is complete.
 """
 
 from __future__ import annotations
@@ -85,19 +91,25 @@ HEADERS = {
 }
 
 
-def _write(path: Path, table: str, rows: list[tuple]) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(HEADERS[table])
-        writer.writerows(rows)
-    return len(rows)
+MANIFEST_NAME = "_manifest.json"
 
 
 def write_dataset(data: Dataset, settings: Settings, output_dir: Path) -> dict:
     """Replaces the contents of ``output_dir`` with the dataset and returns the manifest."""
+    (output_dir / MANIFEST_NAME).unlink(missing_ok=True)
     for system in SOURCE_SYSTEMS:
         shutil.rmtree(output_dir / system, ignore_errors=True)
+
+    rows_by_file: dict[str, int] = {}
+
+    def _write(path: Path, table: str, rows: list[tuple]) -> int:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle, lineterminator="\n")
+            writer.writerow(HEADERS[table])
+            writer.writerows(rows)
+        rows_by_file[path.relative_to(output_dir).as_posix()] = len(rows)
+        return len(rows)
 
     core, treasury, finance = (output_dir / system for system in SOURCE_SYSTEMS)
     counts = {
@@ -149,13 +161,12 @@ def write_dataset(data: Dataset, settings: Settings, output_dir: Path) -> dict:
             "scale": settings.scale,
         },
         "rows_written": counts,
+        "files": dict(sorted(rows_by_file.items())),
         "data_quality_problems_injected": dict(sorted(data.dirt_counts.items())),
         "transactions_not_yet_posted": data.pending_late_arrivals,
         "revenue_control_totals": {
             name: round(value, 2) for name, value in sorted(data.revenue_truth_by_type.items())
         },
     }
-    (output_dir / "_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    (output_dir / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest

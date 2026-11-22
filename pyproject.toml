@@ -19,7 +19,7 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["generator/tests"]
+testpaths = ["generator/tests", "ingest/tests"]
 pythonpath = ["."]
 
 [tool.ruff]

@@ -1,13 +1,15 @@
 .DEFAULT_GOAL := build
 .PHONY: build setup generate load dbt test lint docs clean \
 	orchestrate demo-new-month demo-broken-month pipeline test-orchestration \
-	setup-orchestration manifest
+	assistant demo-assistant test-assistant \
+	setup-orchestration setup-assistant manifest
 
 # Dagster keeps its run history here, so runs started from the command line and
 # from the UI show up in the same place.
 export DAGSTER_HOME := $(CURDIR)/data/dagster
 
 ORCHESTRATION := uv run --group orchestration
+ASSISTANT := uv run --group assistant
 
 ## build: install dependencies, generate the data, load it and run every dbt model and test
 build: setup generate load dbt
@@ -60,6 +62,18 @@ pipeline: setup-orchestration manifest
 test-orchestration: setup-orchestration manifest
 	$(ORCHESTRATION) pytest -q orchestration/tests
 
+## assistant: start the MCP server at http://127.0.0.1:8765/mcp; it answers from the marts only
+assistant: setup-assistant manifest data/warehouse.duckdb
+	$(ASSISTANT) python -m assistant --http
+
+## demo-assistant: ask the server four business questions and try three things it must refuse
+demo-assistant: setup-assistant manifest data/warehouse.duckdb
+	$(ASSISTANT) python -m assistant.demo
+
+## test-assistant: run the tests of the server and of the evaluation
+test-assistant: setup-assistant manifest
+	$(ASSISTANT) pytest -q assistant/tests
+
 ## clean: remove generated data, the local warehouse, run history and dbt artifacts
 clean:
 	rm -rf data/raw data/warehouse.duckdb data/warehouse.duckdb.wal data/dagster data/alerts \
@@ -74,7 +88,10 @@ setup-orchestration:
 	mkdir -p "$(DAGSTER_HOME)"
 	cp orchestration/dagster.yaml "$(DAGSTER_HOME)/dagster.yaml"
 
-# Dagster reads the dbt project from its manifest.
+setup-assistant:
+	uv sync --inexact --group assistant
+
+# Dagster reads the dbt project from its manifest, and so does the MCP server.
 manifest: transform/dbt_packages
 	cd transform && uv run dbt parse --quiet
 
@@ -85,3 +102,7 @@ transform/dbt_packages: transform/packages.yml transform/package-lock.yml
 # The first delivery, for a landing folder that is still empty.
 data/raw/_manifest.json:
 	uv run python -m generator
+
+# The MCP server reads the marts, so a clone without a warehouse builds one first.
+data/warehouse.duckdb:
+	$(MAKE) build

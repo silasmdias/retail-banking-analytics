@@ -3,6 +3,10 @@
 -- Debug: a difference means the full join in `budget_vs_actual` duplicated
 -- rows; check `stg_finance__revenue_budget` for repeated plan lines.
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'budget_vs_actual'}}}) }}
+
 with
 
 budget_report as (

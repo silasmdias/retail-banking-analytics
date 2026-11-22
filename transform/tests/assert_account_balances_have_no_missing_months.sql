@@ -5,6 +5,10 @@
 -- compare with its opened and closed dates; a gap means a monthly extract was
 -- not delivered or was loaded incomplete.
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'stg_core_banking__account_balances'}}}) }}
+
 with
 
 accounts as (

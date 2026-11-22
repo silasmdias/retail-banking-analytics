@@ -3,6 +3,10 @@
 -- Debug: a difference means an account's customer is missing from
 -- `dim_customers`, or a customer appears there more than once.
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'fct_customer_monthly_profitability'}}}) }}
+
 with
 
 by_customer as (

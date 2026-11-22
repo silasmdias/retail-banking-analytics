@@ -4,6 +4,10 @@
 -- `customer_lifetime_value` duplicated curve rows; check
 -- `stg_finance__acquisition_spend` for a repeated month and channel.
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'customer_lifetime_value'}}}) }}
+
 with
 
 summary as (

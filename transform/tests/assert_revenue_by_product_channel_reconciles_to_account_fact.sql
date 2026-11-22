@@ -3,6 +3,10 @@
 -- Debug: a difference means rows were lost or duplicated in the joins of
 -- `revenue_by_product_channel` (check `dim_products` for a missing product).
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'revenue_by_product_channel'}}}) }}
+
 with
 
 reported as (

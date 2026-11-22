@@ -9,6 +9,8 @@ sources:
       labels, mixed date formats and broken references are injected on purpose.
       Tests on these tables use `severity: warn` to measure the problems; the
       staging and intermediate models repair or reject the affected records.
+      The three monthly feeds declare how recent their last load must be, for
+      `dbt source freshness`.
     schema: raw_core_banking
     tables:
       - name: customers
@@ -63,6 +65,11 @@ sources:
           Account transactions, delivered in one file per posting month. A
           transaction can post up to 12 days after it happened, so a file may
           contain records dated in the previous month.
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 35, period: day}
+            error_after: {count: 45, period: day}
         columns:
           - name: transaction_id
             description: Transaction identifier. The feed occasionally repeats a record.
@@ -101,6 +108,11 @@ sources:
           Fees charged to accounts, one row per fee. `fee_status` tells whether
           the fee was kept (`posted`), never collected (`waived`) or refunded
           (`reversed`).
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 35, period: day}
+            error_after: {count: 45, period: day}
         columns:
           - name: fee_id
             description: Fee identifier. The feed occasionally repeats a record.
@@ -131,6 +143,11 @@ sources:
         description: >
           Monthly balance extract, one row per account for every month in which
           the account was open at any point. A small share of rows is delivered twice.
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 35, period: day}
+            error_after: {count: 45, period: day}
         columns:
           - name: account_id
             description: Account identifier.

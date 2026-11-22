@@ -3,6 +3,10 @@
 -- Debug: a difference means the join to accounts fanned out; check that
 -- `stg_core_banking__accounts` still has one row per account.
 
+-- The `dagster` entry names the model this test guards, so the orchestrator
+-- shows the result on that model.
+{{ config(meta={'dagster': {'ref': {'name': 'int_transactions_screened'}}}) }}
+
 with
 
 counts as (

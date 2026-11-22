@@ -36,6 +36,7 @@ models:
         description: '`rejected_records / total_records`, as a decimal.'
         data_tests:
           - dbt_utils.accepted_range:
+              name: rejection_rate_within_limit
               arguments:
                 min_value: 0
                 max_value: 0.01

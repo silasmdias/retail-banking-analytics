@@ -1,0 +1,24 @@
+{
+  "name": "claude-haiku-5-5",
+  "model": "claude-haiku-5-5",
+  "client": "claude-code 2.1.327",
+  "effort": "medium",
+  "repetitions": 3,
+  "dataset": {
+    "seed": 42,
+    "start_month": "2023-01",
+    "end_month": "2025-12",
+    "scale": 1.0
+  },
+  "started_at": "2026-11-22T18:26:22Z",
+  "packages": {
+    "anthropic": "2.12.0",
+    "mcp": "2.3.0",
+    "duckdb": "2.0.1"
+  },
+  "prices_usd_per_million_tokens": {
+    "input": 0.1,
+    "output": 0.5,
+    "cache_read": 0.01
+  }
+}

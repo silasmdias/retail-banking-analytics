@@ -137,12 +137,34 @@ def share(outcomes: Sequence[str], outcome: str) -> float:
     return sum(item == outcome for item in outcomes) / len(outcomes) if outcomes else math.nan
 
 
-def interval(per_case: Sequence[float], resamples: int = 2000, seed: int = 0) -> Interval:
-    """A mean over cases with a 95% bootstrap interval.
+def score_interval(per_case: Sequence[float]) -> Interval:
+    """The share of correct answers with a 95% Wilson score interval.
 
-    Each case contributes one number, already averaged over its repetitions:
-    repetitions of one question are not independent observations, so the cases
-    are what gets resampled. The seed is fixed, so the interval is reproducible.
+    Each question counts once, with the share of its repetitions that were
+    correct: repetitions of one question are not independent observations, so
+    the questions are the sample. Unlike a resampled interval, this one does not
+    close to a point when every answer was right: 44 out of 44 still leaves
+    room for a true rate of 92%.
+    """
+    count = len(per_case)
+    if not count:
+        return Interval(math.nan, math.nan, math.nan)
+    mean = sum(per_case) / count
+    z = 1.959964  # two-sided 95%
+    spread = z * math.sqrt(mean * (1 - mean) / count + z * z / (4 * count * count))
+    middle, scale = mean + z * z / (2 * count), 1 + z * z / count
+    # At the two ends the formula gives exactly 0 and 1; say so without the float noise.
+    low = 0.0 if mean == 0 else (middle - spread) / scale
+    high = 1.0 if mean == 1 else (middle + spread) / scale
+    return Interval(mean, low, high)
+
+
+def interval(per_case: Sequence[float], resamples: int = 2000, seed: int = 0) -> Interval:
+    """A mean over cases with a 95% bootstrap interval, for a difference between two servers.
+
+    Each case contributes one number, already averaged over its repetitions,
+    and the cases are what gets resampled, so a difference stays paired
+    question by question. The seed is fixed, so the interval is reproducible.
     """
     if not per_case:
         return Interval(math.nan, math.nan, math.nan)

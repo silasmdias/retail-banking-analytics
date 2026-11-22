@@ -31,6 +31,7 @@ from assistant.evals.grading import (
     grade,
     interval,
     read_submission,
+    score_interval,
 )
 from assistant.server import build_server
 from assistant.warehouse import Marts
@@ -224,6 +225,19 @@ def test_the_interval_is_reproducible_and_contains_the_mean() -> None:
     assert first.value == 0.75 and first.low < 0.75 < first.high
     assert 0.55 < first.low and first.high < 0.9
     assert interval([1.0, 1.0]).low == interval([1.0, 1.0]).high == 1.0
+
+
+def test_a_perfect_score_still_has_an_interval() -> None:
+    """44 right out of 44 does not show that the true rate is 100%."""
+    perfect = score_interval([1.0] * 44)
+    assert perfect.value == 1.0 and perfect.high == 1.0
+    assert perfect.low == pytest.approx(0.920, abs=0.001)
+    # A question answered right two times out of three counts as two thirds of a question.
+    mixed = score_interval([1.0] * 41 + [2 / 3, 2 / 3, 0.0])
+    assert mixed.value == pytest.approx(0.962, abs=0.001)
+    assert (mixed.low, mixed.high) == pytest.approx((0.859, 0.991), abs=0.001)
+    assert score_interval([0.0] * 10).low == 0.0
+    assert score_interval([]).value != score_interval([]).value  # nan: nothing was answered
 
 
 # --------------------------------------------------------------------------- #
@@ -673,7 +687,7 @@ def test_a_run_records_answers_traces_and_settings(
         "tool_result",
     ]
     assert (
-        "| With the dbt documentation | 5 | 10 | 100.0% | 100.0% to 100.0% | 0.0% | 0.0% | 0.0% |"
+        "| With the dbt documentation | 5 | 10 | 100.0% | 56.6% to 100.0% | 0.0% | 0.0% | 0.0% |"
         in printed
     )
     assert "Documentation against names only: +0.0 points" in printed

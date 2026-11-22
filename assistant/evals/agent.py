@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import anthropic
 from mcp import Client, MCPError
 from mcp.types import TextContent
 
 from assistant.evals.cases import Case
 from assistant.evals.grading import InvalidSubmission, Submission, read_submission
+
+if TYPE_CHECKING:
+    import anthropic
 
 MAX_TOKENS = 16000
 MAX_TURNS = 12

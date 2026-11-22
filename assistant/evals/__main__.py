@@ -3,11 +3,14 @@
     python -m assistant.evals check     free: verifies the answer key and the grader, then
                                         regrades the recorded runs and prints their results
     python -m assistant.evals cases     prints the questions with their reference answers
-    python -m assistant.evals live      paid: a model answers the questions through the server
+    python -m assistant.evals live      a model answers the questions through the server
     python -m assistant.evals report    prints the results of the recorded runs
 
-Only ``live`` calls a language model. It needs Anthropic credentials in the
-environment (``ANTHROPIC_API_KEY``) and stops when its spending limit is reached.
+Only ``live`` calls a language model, and it reaches one in either of two ways.
+With ``--client api`` it calls the model API: that needs Anthropic credentials in
+the environment (``ANTHROPIC_API_KEY``) and is billed per token. With ``--client
+claude-code`` it runs Claude Code, which answers under its own login. Either way
+it stops when the cost of the tokens, at list prices, reaches its limit.
 """
 
 from __future__ import annotations
@@ -15,12 +18,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections import Counter
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -31,8 +39,14 @@ from assistant.evals.grading import CORRECT, Submission, grade
 from assistant.paths import REPO_ROOT, paths
 from assistant.warehouse import Marts
 
+if TYPE_CHECKING:
+    from assistant.evals.agent import Attempt
+
 DEFAULT_MODEL = "claude-opus-5-5"
 CREDENTIALS = "Set ANTHROPIC_API_KEY in the environment and run the command again."
+CLIENTS = ("api", "claude-code")
+
+Ask = Callable[[Case], Awaitable["Attempt"]]
 
 
 def heading(text: str) -> None:
@@ -171,23 +185,107 @@ def _show(case: Case, key: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-async def live(args: argparse.Namespace) -> int:
-    # Imported here so the free commands do not need the model client.
+@asynccontextmanager
+async def through_the_api(args: argparse.Namespace, condition: str) -> AsyncIterator[Ask]:
+    """One server process for the condition; every question is a loop over the model API."""
     import anthropic
     from mcp import Client, StdioServerParameters
 
-    from assistant.evals.agent import ServedByAnotherModel, answer, server_tools
+    from assistant.evals.agent import answer, server_tools
 
+    llm = anthropic.AsyncAnthropic(max_retries=4, timeout=120.0)
+    launch = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "assistant", *([] if condition == "docs" else ["--no-docs"])],
+        env=dict(os.environ),
+        cwd=str(REPO_ROOT),
+    )
+    async with Client(launch) as server:
+        tools = await server_tools(server)
+
+        async def ask(case: Case) -> Attempt:
+            return await answer(
+                case, model=args.model, llm=llm, server=server, tools=tools, effort=args.effort
+            )
+
+        yield ask
+
+
+@asynccontextmanager
+async def through_claude_code(args: argparse.Namespace, condition: str) -> AsyncIterator[Ask]:
+    """Every question is one run of Claude Code, which launches the servers itself."""
+    from assistant.evals import claude_code
+
+    # An empty folder: the client finds no project settings and no memory files in it.
+    with tempfile.TemporaryDirectory(prefix="evaluation-") as folder:
+        config = Path(folder) / "mcp.json"
+        config.write_text(json.dumps(claude_code.mcp_config(condition == "docs")), encoding="utf-8")
+
+        async def ask(case: Case) -> Attempt:
+            return await claude_code.answer(
+                case,
+                model=args.model,
+                executable=args.claude,
+                config=config,
+                include_docs=condition == "docs",
+                effort=args.effort,
+            )
+
+        yield ask
+
+
+def client_in_use(args: argparse.Namespace) -> str | None:
+    """Names the client for the record, or prints why it cannot be used and returns None."""
+    if args.client == "api":
+        import anthropic
+
+        llm = anthropic.AsyncAnthropic()
+        if not (llm.api_key or llm.auth_token or llm.credentials):
+            print(f"No Anthropic credentials were found. {CREDENTIALS}")
+            return None
+        return "api"
+    if shutil.which(args.claude) is None:
+        print(f"Claude Code was not found as `{args.claude}`. Install it or pass --claude.")
+        return None
+    printed = subprocess.run([args.claude, "--version"], capture_output=True, text=True).stdout
+    return f"claude-code {printed.split()[0] if printed.split() else 'unknown'}"
+
+
+def explain(failure: Exception) -> tuple[str, bool]:
+    """What went wrong in an attempt, and whether any other attempt would fail the same way."""
+    import anthropic
+
+    from assistant.evals.agent import ServedByAnotherModel
+    from assistant.evals.claude_code import ClaudeCodeError
+
+    if isinstance(failure, TimeoutError):
+        return "timeout", False
+    if isinstance(failure, ServedByAnotherModel):
+        return f"served by another model: {failure}", False
+    if isinstance(failure, ClaudeCodeError):
+        return str(failure), False
+    if isinstance(failure, anthropic.APIConnectionError):
+        return f"connection error: {failure}", False
+    if isinstance(failure, anthropic.APIStatusError):
+        if failure.status_code in (401, 403):
+            return f"The model API refused the credentials: {failure.message}\n{CREDENTIALS}", True
+        return f"api error {failure.status_code}: {failure.message}", False
+    if isinstance(failure, anthropic.AnthropicError):
+        return f"The model client could not send a request: {failure}\n{CREDENTIALS}", True
+    raise failure
+
+
+async def live(args: argparse.Namespace) -> int:
     if args.model not in runs.PRICES:
         print(
             f"No price is known for {args.model}, so the spending limit cannot be enforced. "
             "Add the model to PRICES in assistant/evals/runs.py."
         )
         return 2
-    llm = anthropic.AsyncAnthropic(max_retries=4, timeout=120.0)
-    if not (llm.api_key or llm.auth_token or llm.credentials):
-        print(f"No Anthropic credentials were found. {CREDENTIALS}")
+    client = client_in_use(args)
+    if client is None:
         return 2
+    connect = through_the_api if args.client == "api" else through_claude_code
     cases = load_cases()
     marts = open_marts()
     key = answer_key.compute_key(cases, marts)
@@ -205,6 +303,7 @@ async def live(args: argparse.Namespace) -> int:
     settings = {
         "name": args.name,
         "model": args.model,
+        "client": client,
         "effort": args.effort,
         "repetitions": args.repetitions,
         "dataset": answer_key.delivered_dataset(paths().raw_dir),
@@ -215,7 +314,11 @@ async def live(args: argparse.Namespace) -> int:
     settings_file = run_dir / "run.json"
     if settings_file.is_file():
         earlier = json.loads(settings_file.read_text(encoding="utf-8"))
-        changed = [k for k in ("model", "effort", "dataset") if earlier[k] != settings[k]]
+        changed = [
+            k
+            for k in ("model", "client", "effort", "dataset")
+            if earlier.get(k, "api" if k == "client" else None) != settings[k]
+        ]
         if changed:
             print(f"Run {args.name} exists with another {', '.join(changed)}. Pick a new --name.")
             return 2
@@ -224,44 +327,38 @@ async def live(args: argparse.Namespace) -> int:
     settings_file.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
     spent = 0.0
+    failed_in_a_row = 0
     counts: Counter[str] = Counter()
     fatal: list[str] = []  # a problem no other question would survive either
 
-    async def one(condition: str, server: Client, tools: list[dict], case: Case, rep: int) -> None:
-        nonlocal spent
+    async def one(condition: str, ask: Ask, case: Case, rep: int) -> None:
+        nonlocal spent, failed_in_a_row
         folder = run_dir / condition
         if fatal:
             return
         if spent >= args.max_usd:
             counts["not run: spending limit"] += 1
             return
-        error = None
         try:
             with anyio.fail_after(args.timeout):
-                attempt = await answer(
-                    case, model=args.model, llm=llm, server=server, tools=tools, effort=args.effort
-                )
-        except TimeoutError:
-            error = "timeout"
-        except ServedByAnotherModel as failure:
-            error = f"served by another model: {failure}"
-        except anthropic.APIConnectionError as failure:
-            error = f"connection error: {failure}"
-        except anthropic.APIStatusError as failure:
-            if failure.status_code in (401, 403):
-                fatal.append(f"The model API refused the credentials: {failure.message}")
+                attempt = await ask(case)
+        except Exception as failure:
+            error, hopeless = explain(failure)
+            if hopeless:
+                fatal.append(error)
                 return
-            error = f"api error {failure.status_code}: {failure.message}"
-        except anthropic.AnthropicError as failure:
-            fatal.append(f"The model client could not send a request: {failure}")
-            return
-        if error:
             counts["errors"] += 1
+            failed_in_a_row += 1
             runs.append_jsonl(
                 folder / "errors.jsonl", {"case_id": case.id, "rep": rep, "error": error}
             )
             print(f"{condition:12} {case.id:44} #{rep}  ERROR {error}")
+            if failed_in_a_row >= 5:
+                fatal.append(
+                    f"Five attempts in a row failed, so the run stopped. The last: {error}"
+                )
             return
+        failed_in_a_row = 0
         outcome = grade(case, key.get(case.id), attempt.submission)
         cost = runs.cost_usd(args.model, attempt.usage) or 0.0
         spent += cost
@@ -319,29 +416,23 @@ async def live(args: argparse.Namespace) -> int:
         ]
         if not pending:
             continue
-        flags = ["--no-docs"] if condition == "schema_only" else []
-        launch = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "assistant", *flags],
-            env=dict(os.environ),
-            cwd=str(REPO_ROOT),
-        )
-        async with Client(launch) as server:
-            tools = await server_tools(server)
+        async with connect(args, condition) as ask:
             # The first question runs alone: bad credentials stop the run right there.
-            await one(condition, server, tools, *pending[0])
+            await one(condition, ask, *pending[0])
             async with anyio.create_task_group() as group:
                 for item in pending[1:]:
-                    group.start_soon(limited, condition, server, tools, *item)
+                    group.start_soon(limited, condition, ask, *item)
+        if fatal:
+            break
     if fatal:
-        print(f"\n{fatal[0]}\n{CREDENTIALS}")
+        print(f"\n{fatal[0]}")
         return 2
 
     heading("This run")
     print(
         ", ".join(f"{count} {label}" for label, count in sorted(counts.items())) or "nothing to do"
     )
-    print(f"Estimated cost of this command: US$ {spent:.2f}\n")
+    print(f"Cost of the tokens of this command, at list prices: US$ {spent:.2f}\n")
     settings, rows = runs.read_run(run_dir)
     print(
         runs.report(
@@ -372,8 +463,16 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser(
         "update-key", help="rewrite the committed answer key from the default dataset"
     )
-    run = commands.add_parser("live", help="have a model answer the questions (paid)")
-    run.add_argument("--model", default=DEFAULT_MODEL)
+    run = commands.add_parser("live", help="have a model answer the questions")
+    run.add_argument(
+        "--client",
+        choices=CLIENTS,
+        default="api",
+        help="how the model is reached: the model API, billed per token, or Claude Code, "
+        "under its own login",
+    )
+    run.add_argument("--claude", default="claude", help="the Claude Code executable")
+    run.add_argument("--model", default=DEFAULT_MODEL, help="full name of the model")
     run.add_argument(
         "--name", help="folder under results/ for this run; the model's name by default"
     )

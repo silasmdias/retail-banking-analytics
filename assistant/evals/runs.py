@@ -31,6 +31,7 @@ from assistant.evals.grading import (
     Submission,
     grade,
     interval,
+    score_interval,
     share,
 )
 
@@ -153,7 +154,7 @@ def summarize(rows: list[dict], cases: Sequence[Case], key: dict[str, Any]) -> S
     return Summary(
         questions=len(per_case),
         answers=len(rows),
-        correct=interval(list(per_case.values())),
+        correct=score_interval(list(per_case.values())),
         wrong=share(outcomes, WRONG),
         abstained=share(outcomes, ABSTAINED),
         no_answer=share(outcomes, NO_ANSWER),
@@ -194,8 +195,10 @@ def _mean(values: Iterable[float]) -> float:
 
 def report(settings: dict, summaries: dict[str, Summary]) -> str:
     """The run as Markdown tables, the form the README quotes."""
+    client = settings.get("client", "api")
+    reached = "the model API" if client == "api" else client.replace("claude-code", "Claude Code")
     lines = [
-        f"Run `{settings['name']}`: `{settings['model']}`, "
+        f"Run `{settings['name']}`: `{settings['model']}` through {reached}, "
         f"{settings['repetitions']} repetition(s) per question, effort {settings['effort']}.",
         "",
         "| Server | Questions | Answers | Correct | 95% interval | Wrong answer "
@@ -231,6 +234,12 @@ def report(settings: dict, summaries: dict[str, Summary]) -> str:
             f"| {CONDITIONS[condition]} | {summary.tool_calls:.1f} | {summary.tokens:,.0f} "
             f"| {summary.seconds:.1f} | {per_answer} | {total} |"
         )
+    if client != "api":
+        lines += [
+            "",
+            "The cost is what these tokens cost at the API's list prices. This run went "
+            "through Claude Code under a subscription, so nothing was billed per token.",
+        ]
 
     if len(summaries) == 2:
         first, second = summaries.values()

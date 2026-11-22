@@ -1,6 +1,6 @@
 # Retail banking analytics
 
-dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB, with a Dagster pipeline that loads each monthly delivery, checks it and raises alerts, and an MCP server that lets a language model answer questions from the marts, with an evaluation built to measure how often it is right.
+dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB, with a Dagster pipeline that loads each monthly delivery, checks it and raises alerts, and an MCP server that lets a language model answer questions from the marts, with an evaluation of how often it is right.
 
 The project answers three questions a retail banking finance team asks every month:
 
@@ -331,12 +331,12 @@ Only the raw layer is incremental. dbt rebuilds every model on each run: it take
 
 ## Questions in plain language
 
-An MCP server lets a language model answer business questions from the marts and their dbt documentation, and from nothing else. An evaluation is built to measure how often the answers are right. It has not been run on a model yet: [Results](#results) says what exists and what does not.
+An MCP server lets a language model answer business questions from the marts and their dbt documentation, and from nothing else. An evaluation measures how often the answers are right. Claude Haiku 5.5, the smallest current Claude model, answered 132 times out of 132 correctly with the dbt documentation, and 124 out of 132 with table and column names alone. [Results](#results) has the detail, and [Limits of the evaluation](#limits-of-the-evaluation) says what those figures do not show.
 
 The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is the standard way to hand tools to a language model. dbt Labs maintains [an official MCP server](https://github.com/dbt-labs/dbt-mcp), and for a team on the dbt platform that is the one to use. The server here is small on purpose. It shows two things the official one leaves to whoever runs it:
 
 - **A fence.** Run locally without a dbt platform account, the official server offers the dbt commands (checked against its documentation in November 2026). `show` runs any SQL with the credentials dbt itself writes with, and `build` and `run` change the warehouse. Its read-only query tool, its documentation tools and its metrics tools need the platform. Here the model can read the ten marts and can reach nothing else, because nothing else is there.
-- **A way to measure.** 44 questions with reference answers computed from the warehouse, graded by a program, so that "the model answers correctly" can be a number with a method behind it. The method is here and tested. The run that produces the number calls a paid API and has not been made.
+- **A measurement.** 44 questions with reference answers computed from the warehouse, graded by a program, so that "the model answers correctly" is a number with a method behind it, and so is "the documentation helps".
 
 ```mermaid
 flowchart LR
@@ -510,41 +510,72 @@ Always saying "cannot be answered": 9 of 44 correct
 Always answering zero, "no" or "unknown": 2 of 44 correct
 ```
 
-Then it regrades every recorded run from the answers stored in the repository and prints its tables, so that a published figure can be checked without paying for a model.
+Then it regrades every recorded run from the answers stored in the repository and prints its tables, so that a published figure can be checked without calling a model.
 
 ```bash
-export ANTHROPIC_API_KEY=...
-make eval-live
+make eval-live ARGS="--client claude-code --model claude-haiku-5-5 --repetitions 3"
 ```
 
-This part calls a model, Claude Opus 5.5 unless another is named, and costs money. It needs an Anthropic API key in the environment, and nothing else in the repository uses one. `ARGS` passes options: `make eval-live ARGS="--model claude-haiku-5-5 --repetitions 3 --max-usd 5"`. The run stops starting questions when its estimated cost reaches `--max-usd` (2 dollars by default), writes each answer as it arrives, and picks up where it stopped when the command is run again. Every tool call goes through the MCP protocol to a real server process.
+This part has a model answer the questions, and there are two ways to reach one.
+
+`--client claude-code` runs [Claude Code](https://claude.com/claude-code) in print mode, once per question, under its own login, so a Claude subscription is enough. It is used as a thin client: its built-in tools are switched off, its system prompt is replaced by the evaluation's own, and it starts in an empty folder, so no setting or memory file of the user is loaded. The model gets the server's tools and one more, `submit_answer`, which a second small MCP server provides. What happened is read back from the transcript the client prints.
+
+`--client api`, the default, calls the Anthropic API directly and is billed per token. It needs `ANTHROPIC_API_KEY` in the environment, and nothing else in the repository uses a key. This path is tested with a scripted stand-in for the model and has not been run against the real API.
+
+Either way the run stops starting questions when the cost of its tokens at list prices reaches `--max-usd` (2 dollars by default), writes each answer as it arrives, and picks up where it stopped when the command is run again. Every tool call goes through the MCP protocol to a real server process.
 
 ### Results
 
-No model has been run through the evaluation, so there is no accuracy figure to report. A run costs money, and none has been paid for. This is what exists today, and what does not:
+One run is recorded: Claude Haiku 5.5, the smallest current Claude model, through Claude Code 2.1.327, three answers per question, on 22 November 2026. `make eval` regrades it from the answers in [`assistant/evals/results/claude-haiku-5-5`](assistant/evals/results/claude-haiku-5-5) and prints these tables.
 
-| | State |
-| --- | --- |
-| Questions, answer key and grader | Checked by `make eval`, which is a step of the CI workflow. The three answer sheets above are the reference points for any future result: a model that always says "cannot be answered" scores 9 of 44 |
-| The loop a model answers through | Tested with a scripted stand-in for the model that goes through the paid command end to end: it records answers, resumes a run, stops at the spending limit and keeps a failed call apart from a wrong answer |
-| A real client with a real model | Three questions through Claude Code, described under [Connect a client](#connect-a-client). All three went as designed. Three questions are an anecdote |
-| A call to the model API from the evaluation | Never made. The request was checked against the installed SDK, and the first real run may still need a fix |
-| An accuracy figure, with and without the documentation | Not measured |
+| Server | Questions | Answers | Correct | 95% interval | Wrong answer | Said it cannot answer | No answer |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| With the dbt documentation | 44 | 132 | 100.0% | 92.0% to 100.0% | 0.0% | 0.0% | 0.0% |
+| Table and column names only | 44 | 132 | 93.9% | 82.8% to 98.0% | 3.8% | 2.3% | 0.0% |
 
-`make eval-live` records a run under `assistant/evals/results/`: the answer to each question, the SQL the model wrote and the tokens it used. From then on `make eval` prints, for each of the two servers, the share of correct answers with its interval, the share of wrong answers, the share by kind of question, and the cost.
+Correct answers by kind of question:
+
+| Kind | Questions | With the dbt documentation | Table and column names only |
+| --- | ---: | ---: | ---: |
+| lookup | 16 | 100.0% | 100.0% |
+| aggregation | 11 | 100.0% | 84.8% |
+| definition | 8 | 100.0% | 87.5% |
+| unanswerable | 9 | 100.0% | 100.0% |
+
+Documentation against names only: +6.1 points (95% interval +0.8 to +13.6).
+
+With the documentation, all 132 answers were right, including the eleven questions that have a plausible wrong query and the nine that cannot be answered. Without it, the same model on the same tables gave five wrong answers and gave up three times. All eight were on questions where the documentation says how a column may be aggregated, or states a fact:
+
+| Question | Without the documentation | What happened |
+| --- | --- | --- |
+| `realized-share-of-clv-branch` | wrong 3 times of 3 | It summed per-customer columns across cohorts, which gives every cohort the same weight, and answered 42.0% or 42.5% where the answer is 41.8% |
+| `clv-all-customers` | wrong 1 time of 3 | It summed a per-customer column over the cohorts and divided by all customers: 35 dollars where the answer is 1,037 |
+| `active-customers-december-2025` | wrong 1 time of 3 | It answered 3,586, the customers with an open account as of the latest load, after computing the right 3,651 on the way |
+| `clv-pooled-ages` | gave up 3 times of 3 | The threshold is stated in the documentation and the data alone does not show it. Giving up was the sound thing to do |
+
+The SQL behind each of these is in the recorded answers. Lookups and unanswerable questions came out the same both ways: a name like `total_revenue` is enough for the first, and a missing column is visible without any description for the second. No answer was lost to plumbing: 264 answers, no failed call, no timeout, and no question left without an answer.
+
+| Server | Tool calls per question | Tokens per question | Seconds per question | Tokens of the run at list prices |
+| --- | ---: | ---: | ---: | ---: |
+| With the dbt documentation | 4.1 | 35,380 | 11.7 | US$ 0.20 |
+| Table and column names only | 5.7 | 27,698 | 14.1 | US$ 0.18 |
+
+The run went through Claude Code under a subscription, so nothing was billed per token; the last column is what the same tokens cost at the API's list prices. Without descriptions the model made more calls, many of them exploring the data to work out what a column means.
 
 ### Limits of the evaluation
 
-- It has not been run on a model. Everything below is about what a result would and would not mean.
+- One model, the smallest of its family, on one day. A larger model may not need the documentation for these questions, and may fail in ways this one did not.
+- With the documentation the score is at the ceiling. 44 right out of 44 questions is still compatible with a true rate of 92%, and a set that the smallest model clears cannot tell a better model or a better server from this one. It needs harder questions for that.
+- The run went through Claude Code, not through the API. The client packs and caches the conversation its own way, a question gets one turn with no reminder to hand in an answer, and an answer of the wrong shape is not sent back. The API path of the evaluation has only been run with a stand-in for the model.
 - The questions were written by the person who wrote the models and their documentation. They ask for what the marts were built to answer, in the marts' own vocabulary. People ask vaguer questions.
 - Every question states its unit, its precision and its period. A real question rarely does, and choosing them is part of the work.
 - The answer key is SQL written by the same person. A second query confirms six of the answers. A wrong reference query would count against the model.
 - The grader checks the answer and not the explanation. A right number with a misleading sentence around it passes.
 - Four questions are yes or no, so a guess is right half the time on those.
 - The model works under the evaluation's own short instructions and hands in a structured answer. A chat client adds instructions of its own and returns prose.
-- 44 questions on one synthetic dataset, in English. The interval printed next to each result says how much it would move with another draw of questions of the same kind. A difference smaller than that interval is not a finding.
+- 44 questions on one synthetic dataset, in English. The interval next to each result treats the questions as the sample, since three answers to one question are not three observations. The six points between the two servers have an interval that starts under one point: the direction is clear, the size is not.
 - The names of the tables and columns are already descriptive. Removing the descriptions from a warehouse with cryptic names would cost a model more than it does here, so the comparison understates what documentation is worth.
-- A result belongs to one model on one date. The cost is an estimate from token counts and the list prices of November 2026.
+- The cost figures are token counts times the list prices of November 2026.
 
 ## Design choices
 
@@ -566,7 +597,7 @@ The MCP server is written for this project instead of configuring a general one,
 
 The evaluation has no model as a judge. Every answer is a figure, a label or a yes, so a program can grade it, the grade is the same on every run, and anyone can recompute it from the recorded answers. The price is that only questions with one right answer can be asked.
 
-The loop that lets a model answer is one short function over the Messages API, with no agent framework, because an evaluation has to record every tool call and every token, and has to know which model answered.
+The loop that lets a model answer is one short function over the Messages API, with no agent framework, because an evaluation has to record every tool call and every token, and has to know which model answered. The same questions can also go through Claude Code, read back from the transcript it prints. That is how the recorded run was made, and it needs a subscription instead of a key.
 
 ## Project structure
 
@@ -593,7 +624,9 @@ assistant/     MCP server and its evaluation
     questions.yml    the 44 questions, with the SQL that answers each one
     answer_key.py    reference answers computed from the warehouse, and their checks
     grading.py       the grader and the intervals
-    agent.py         the loop a model answers through
+    agent.py         the loop a model answers through, over the model API
+    claude_code.py   the same questions through Claude Code, read from its transcript
+    answer_sheet.py  the one-tool MCP server a model hands its answer to in that case
     runs.py          recorded runs and their summary
     results/         answers of the recorded runs
 transform/     dbt project
@@ -615,7 +648,7 @@ uv run python -m generator --help
 
 ## Next steps
 
-- Record a run of the evaluation on a model and publish its table.
+- Run the evaluation on larger models and through the API, and add questions hard enough to tell them apart.
 - Run the same questions through the official dbt MCP server, limited to its `show` tool, as a third column of the evaluation.
 - Add questions phrased the way people ask them, without unit, precision or period, and grade whether the model asks or assumes.
 

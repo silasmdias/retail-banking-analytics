@@ -1,0 +1,10 @@
+# Instance settings for running Dagster locally. `make orchestrate` copies this
+# file into DAGSTER_HOME (data/dagster), where Dagster also keeps its run history.
+
+telemetry:
+  enabled: false
+
+# DuckDB accepts one writing process at a time, so runs are queued one by one.
+concurrency:
+  runs:
+    max_concurrent_runs: 1

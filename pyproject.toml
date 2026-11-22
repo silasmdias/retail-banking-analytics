@@ -14,13 +14,32 @@ dev = [
     "pytest>=8",
     "ruff>=0.8",
 ]
+# Only needed to run the orchestrated pipeline (`make orchestrate`).
+orchestration = [
+    "dagster>=1.13,<1.14",
+    "dagster-webserver>=1.13,<1.14",
+    "dagster-dbt>=0.29,<0.30",
+    "dagster-dg-cli>=1.13,<1.14",
+]
 
 [tool.uv]
 package = false
 
+# Lets `dg dev` find the Dagster definitions in orchestration/definitions.py.
+[tool.dg]
+directory_type = "project"
+
+[tool.dg.project]
+root_module = "orchestration"
+
 [tool.pytest.ini_options]
 testpaths = ["generator/tests", "ingest/tests"]
 pythonpath = ["."]
+# Deprecation notices raised inside the libraries, not by this project's code.
+filterwarnings = [
+    "ignore::DeprecationWarning:dagster_dbt.*",
+    "ignore::DeprecationWarning:sqlglotrs.*",
+]
 
 [tool.ruff]
 line-length = 100

@@ -1,5 +1,7 @@
-# Generated data and local warehouse
+# Generated data, local warehouse, Dagster run history and alerts
 data/raw/
+data/dagster/
+data/alerts/
 *.duckdb
 *.duckdb.wal
 

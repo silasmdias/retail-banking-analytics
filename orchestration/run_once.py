@@ -52,7 +52,8 @@ class RunOutcome:
         lines = [
             f"Delivery: {self.plan.describe()}",
             f"Run {self.run_id[:8]} {'succeeded' if self.success else 'FAILED'} "
-            f"in {self.seconds:.0f} seconds",
+            f"in {max(1, round(self.seconds))} "
+            f"{'second' if round(self.seconds) <= 1 else 'seconds'}",
         ]
         labels = {step: STEP_LABELS.get(step, step) for step in self.steps}
         width = max(len(label) for label in labels.values())

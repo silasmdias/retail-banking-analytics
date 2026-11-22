@@ -79,24 +79,30 @@ def cut_in_half(path: Path) -> tuple[int, int]:
 
 
 def point_to_unknown_accounts(path: Path, one_in: int) -> int:
-    """Rewrites the account of every ``one_in``-th record to one that does not exist.
+    """Rewrites the account of every ``one_in``-th transaction to one that does not exist.
 
     The file keeps its row count, so it still agrees with the control file: this
-    is a source that sent wrong data, not a file damaged on the way.
+    is a source that sent wrong data, not a file damaged on the way. A record the
+    feed repeats is changed in every copy, so the result does not depend on which
+    copy the staging model keeps.
     """
     with path.open(newline="", encoding="utf-8") as handle:
         header, *rows = list(csv.reader(handle))
-    account = header.index("account_id")
-    changed = 0
-    for position, row in enumerate(rows):
-        if position % one_in == 0:
-            row[account] = f"ACC-8{position:05d}-01"
-            changed += 1
+    identifier, account = header.index("transaction_id"), header.index("account_id")
+    distinct = list(dict.fromkeys(row[identifier] for row in rows))
+    unknown = {
+        transaction_id: f"ACC-8{position:05d}-01"
+        for position, transaction_id in enumerate(distinct)
+        if position % one_in == 0
+    }
+    for row in rows:
+        if row[identifier] in unknown:
+            row[account] = unknown[row[identifier]]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(header)
         writer.writerows(rows)
-    return changed
+    return len(unknown)
 
 
 # --------------------------------------------------------------------------- #

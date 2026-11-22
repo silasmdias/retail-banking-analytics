@@ -224,7 +224,7 @@ With an empty `data/raw`, this generates the three years of history and runs the
 2026-01 arrives
 ---------------
 Delivery: 5 new files for 2026-01 and 4 files delivered again with changes
-Run f7d0a706 succeeded in 33 seconds
+Run b75a7d4e succeeded in 21 seconds
   check the delivery    succeeded
   load the raw tables   succeeded
   dbt: validate inputs  succeeded
@@ -237,7 +237,9 @@ Alerts: none
 Loaded 9 of the 123 files in the landing folder. The marts went from 2025-12 to 2026-01.
 ```
 
-The four files delivered again are the two snapshots, the funds transfer rates and December's fees with their late references. The six warnings are the dbt source tests that count known problems; they warn on every run and raise no alert.
+The five new files are the three monthly extracts and the two finance files for 2026. The four delivered again are the two snapshots, the funds transfer rates and December's fees with their late references.
+
+The six warnings are dbt source tests that count known problems; they warn on every run and raise no alert. Dagster shows 143 of the 145 dbt tests as checks. The other two compare one source table with another, which cannot be attached to a single asset; dbt still runs them in the first step, as warnings.
 
 ```bash
 make demo-broken-month
@@ -247,9 +249,9 @@ This delivers the following month four times. Each time the demo states what sho
 
 | The source sends February 2026 with | What the pipeline does | Marts |
 | --- | --- | --- |
-| The transactions file cut in half: 37,889 rows where the control file declares 75,779 | Stops before the load, in under a second. Nothing enters the warehouse. Error alert | Stay at January |
+| The transactions file cut in half: 37,889 rows where the control file declares 75,779 | Stops before the load, in about a second. Nothing enters the warehouse. Error alert | Stay at January |
 | The complete file, with 1 in 20 transactions pointing to accounts that do not exist | Loads the file as sent and builds `dq_rejected_records`, which shows 5.1% of the month rejected. The 1% limit fails, so the marts are not rebuilt. Error alert | Stay at January |
-| The file again, with 1 in 200 transactions wrong | Passes the limit and publishes the month. Warning alert: 0.58% rejected is 5.4 times the average of the previous six months | Reach February |
+| The file again, with 1 in 200 transactions wrong | Passes the limit and publishes the month. Warning alert: 0.58% rejected is 5.5 times the average of the previous six months | Reach February |
 | The corrected file | Loads only that file, which replaces its own rows. No alert | Reach February |
 
 Both demos can be repeated. Each run delivers the month after the latest one in `data/raw`. `make build` goes back to the default three years.
@@ -284,7 +286,7 @@ The three runs below were started by the sensor: a new month, a truncated delive
 | After the first step | No rejection reason in the months just loaded runs at more than three times its average of the previous six months | Warning |
 | dbt, second step | The 47 tests on the remaining intermediate models and the marts | Run fails |
 
-The control file is `data/raw/_manifest.json`, written by the generator the way a source system sends a control file with a batch: the list of files and the number of records in each. It catches a file damaged on the way. The volume check catches the case the control file cannot: a source that sent a partial extract and counted it correctly.
+The control file is `data/raw/_manifest.json`, written by the generator the way a source system sends a control file with a batch: the list of files and the number of records in each. It catches a file damaged on the way. The volume check catches the case the control file cannot: a source that sent a partial extract and counted it correctly. The load accepts only the exact files that passed these checks in the same run: if a file changes between the check and the load, nothing is loaded.
 
 `dbt build` is split in two so that validation finishes before any mart is replaced. The first step builds everything that reads the raw tables and judges their quality, including the rejected-records report, which is the first thing to look at when a delivery is stopped. The second step builds the rest. A failure in the second step is a bug in a model, not a problem with the delivery: it fails the run and raises an alert, and dbt skips whatever is downstream of the failed test.
 
@@ -298,14 +300,14 @@ Alerts are written to `data/alerts/alerts.jsonl`, one JSON object per line, whic
 
 ```json
 {
-  "alert_id": "ea61186a9b18",
-  "raised_at": "2026-11-22T00:06:45Z",
+  "alert_id": "347967ba0183",
+  "raised_at": "2026-11-22T00:45:31Z",
   "severity": "error",
   "source": "landing/delivery: row_counts_match_control_file",
   "summary": "Row count differs from the control file: core_banking/transactions/transactions_2026-02.csv: control file says 75,779 rows, the file has 37,889",
   "problems": ["core_banking/transactions/transactions_2026-02.csv: control file says 75,779 rows, the file has 37,889"],
   "job": "process_delivery",
-  "run_id": "45ee5503-e596-4cc2-a556-9307f5d22414"
+  "run_id": "7d307dbf-2eb6-4cb6-b494-426c943268b8"
 }
 ```
 
@@ -327,7 +329,7 @@ The generator is deterministic. The same seed always produces the same files. Ex
 
 Reference data that changes rarely and is maintained by hand lives in dbt seeds: the channel mapping and the unit costs used for cost to serve.
 
-Dagster was chosen as the orchestrator because it reads the dbt project directly: every model becomes an asset and every dbt test a check, with no code to keep in sync. It also runs from the same environment as dbt with one command and no service to set up.
+Dagster was chosen as the orchestrator because it reads the dbt project directly: every model becomes an asset and its tests become checks, with no code to keep in sync. It also runs from the same environment as dbt with one command and no service to set up.
 
 The unit of work is a delivery, not a monthly partition. A delivery is whatever is in the landing folder and not yet loaded, tracked file by file in the ledger. The first load of three years and the arrival of one month go through the same job, and a month does not have to arrive alone or on time.
 

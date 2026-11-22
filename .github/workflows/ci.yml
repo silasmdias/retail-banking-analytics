@@ -57,3 +57,29 @@ jobs:
 
       - name: Deliver a broken month and check that it is stopped
         run: make demo-broken-month
+
+  assistant:
+    name: MCP server and evaluation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --group assistant
+
+      - name: Test the server and the evaluation
+        run: make test-assistant
+
+      - name: Generate data, load it and run dbt build
+        run: make generate load dbt
+
+      - name: Ask the server four questions and check what it refuses
+        run: make demo-assistant
+
+      - name: Check the answer key and regrade the recorded runs
+        run: make eval

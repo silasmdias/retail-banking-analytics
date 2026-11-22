@@ -1,6 +1,6 @@
 # Retail banking analytics
 
-dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB.
+dbt models over three years of synthetic data from a fictional retail bank, running locally on DuckDB, with a Dagster pipeline that loads each monthly delivery, checks it and raises alerts.
 
 The project answers three questions a retail banking finance team asks every month:
 
@@ -27,7 +27,16 @@ cd transform
 uv run dbt show --select customer_lifetime_value --limit 10
 ```
 
-`make docs` builds and serves the dbt documentation site, with the lineage graph and a description of every table and column. `make test` runs the generator's own tests.
+`make docs` builds and serves the dbt documentation site, with the lineage graph and a description of every table and column. `make test` runs the tests of the generator and the loader.
+
+To see the pipeline process a month as it arrives, and stop a broken one:
+
+```bash
+make demo-new-month
+make demo-broken-month
+```
+
+The [Orchestration](#orchestration) section explains what these do.
 
 ## What it answers
 
@@ -169,7 +178,7 @@ The generator injects the problems below and counts each one. The counts are for
 | Fee for an account that does not exist | 25 | Rejected |
 | Customer row delivered twice | 10 | Deduplicated in staging |
 
-Two more behaviors are modeled without being errors. About 0.5% of transactions post 3 to 12 days late, so a monthly file can carry records dated in the previous month. A few customers are internal test accounts and are left out of the marts.
+Two more behaviors are modeled without being errors. About 0.5% of transactions post 3 to 12 days late, so a monthly file can carry records dated in the previous month. A fee charged for such a transaction has no transaction reference until it posts, so the next delivery sends that month's fees file again with the reference filled in. A few customers are internal test accounts and are left out of the marts.
 
 Rejected records are kept, each with its reason, and summarized in `dq_rejected_records`. On the default dataset that mart reports exactly the counts above.
 
@@ -185,21 +194,163 @@ Tests are placed by layer.
 
 The tests were checked against broken data. A copy of the dataset was damaged in five ways: a channel label missing from the mapping, a monthly balance file missing from the middle of the history, the latest balance file missing, a month without a funds transfer rate and a repeated budget line. Each one failed the build at the expected test.
 
-A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the linter, the generator tests and the full build on every push and pull request.
+A GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull request. One job runs the linter, the generator and loader tests and the full build. A second job runs the orchestration tests and both demos described below.
+
+## Orchestration
+
+A Dagster pipeline runs the same steps as `make build`, one delivery at a time. When the source systems leave a new month in `data/raw`, it checks the files, loads only what is new, validates the data with dbt and rebuilds the marts. When a check fails, the run stops, the finance marts keep their last good state and an alert is raised.
+
+```mermaid
+flowchart LR
+    landing[("landing folder<br/>data/raw")] --> delivery{{"delivery checks"}}
+    delivery --> load["incremental load<br/>new and changed files"]
+    load --> validate{{"dbt: validate inputs<br/>sources, staging, screening"}}
+    validate --> marts["dbt: build marts"]
+    delivery -. fails .-> alert(["alert"])
+    validate -. fails .-> alert
+```
+
+### Run the pipeline
+
+You need the same tools as before, [uv](https://docs.astral.sh/uv/) and `make`. The first command also installs Dagster, which `make build` does not need.
+
+```bash
+make demo-new-month
+```
+
+With an empty `data/raw`, this generates the three years of history and runs the pipeline on them: 118 files, loaded and built in one run. Then the source systems deliver January 2026 and the pipeline runs again:
+
+```
+2026-01 arrives
+---------------
+Delivery: 5 new files for 2026-01 and 4 files delivered again with changes
+Run f7d0a706 succeeded in 33 seconds
+  check the delivery    succeeded
+  load the raw tables   succeeded
+  dbt: validate inputs  succeeded
+  source freshness      succeeded
+  dbt: build marts      succeeded
+  rejection rate drift  succeeded
+Checks: 154 passed, 6 warned, 0 failed
+Alerts: none
+
+Loaded 9 of the 123 files in the landing folder. The marts went from 2025-12 to 2026-01.
+```
+
+The four files delivered again are the two snapshots, the funds transfer rates and December's fees with their late references. The six warnings are the dbt source tests that count known problems; they warn on every run and raise no alert.
+
+```bash
+make demo-broken-month
+```
+
+This delivers the following month four times. Each time the demo states what should happen and exits with an error if it does not, so it doubles as an end-to-end test.
+
+| The source sends February 2026 with | What the pipeline does | Marts |
+| --- | --- | --- |
+| The transactions file cut in half: 37,889 rows where the control file declares 75,779 | Stops before the load, in under a second. Nothing enters the warehouse. Error alert | Stay at January |
+| The complete file, with 1 in 20 transactions pointing to accounts that do not exist | Loads the file as sent and builds `dq_rejected_records`, which shows 5.1% of the month rejected. The 1% limit fails, so the marts are not rebuilt. Error alert | Stay at January |
+| The file again, with 1 in 200 transactions wrong | Passes the limit and publishes the month. Warning alert: 0.58% rejected is 5.4 times the average of the previous six months | Reach February |
+| The corrected file | Loads only that file, which replaces its own rows. No alert | Reach February |
+
+Both demos can be repeated. Each run delivers the month after the latest one in `data/raw`. `make build` goes back to the default three years.
+
+```bash
+make orchestrate
+```
+
+This starts Dagster at http://localhost:3000 with the asset graph, every check and the history of the runs above. A sensor looks at `data/raw` every 30 seconds and starts a run when it finds files that are not loaded. To watch it, deliver a month from another terminal while Dagster is running:
+
+```bash
+uv run python -m generator --end-month 2026-03
+```
+
+The three runs below were started by the sensor: a new month, a truncated delivery that failed in one second, and the corrected delivery.
+
+![Dagster runs page with three runs started by the delivery sensor: success, failure, success](docs/images/dagster-runs.png)
+
+`make pipeline` does once, without the UI, what the sensor does: it processes whatever is in `data/raw` and prints the same report as the demos.
+
+### What is checked
+
+| When | Check | If it fails |
+| --- | --- | --- |
+| Before the load | The files on disk are the ones the control file lists, and every month has all its monthly files | Run stops, nothing is loaded |
+| Before the load | Every new file has the columns its feed promises | Run stops, nothing is loaded |
+| Before the load | Every new file has the row count the source declared in the control file | Run stops, nothing is loaded |
+| Before the load | A new monthly file is between half and double the average of the three months before it | Warning |
+| After the load | Every file has as many rows in its raw table as it has on disk | Run stops before dbt |
+| After the load | `dbt source freshness`: the monthly feeds were loaded in the last 35 days | Warning, error after 45 days |
+| dbt, first step | The 98 tests on sources, staging, record screening and `dq_rejected_records`, among them the 1% limit on any rejection reason | Run stops, marts are not rebuilt |
+| After the first step | No rejection reason in the months just loaded runs at more than three times its average of the previous six months | Warning |
+| dbt, second step | The 47 tests on the remaining intermediate models and the marts | Run fails |
+
+The control file is `data/raw/_manifest.json`, written by the generator the way a source system sends a control file with a batch: the list of files and the number of records in each. It catches a file damaged on the way. The volume check catches the case the control file cannot: a source that sent a partial extract and counted it correctly.
+
+`dbt build` is split in two so that validation finishes before any mart is replaced. The first step builds everything that reads the raw tables and judges their quality, including the rejected-records report, which is the first thing to look at when a delivery is stopped. The second step builds the rest. A failure in the second step is a bug in a model, not a problem with the delivery: it fails the run and raises an alert, and dbt skips whatever is downstream of the failed test.
+
+dbt tests say what must always be true of the warehouse. The freshness and drift checks need to know about time and about the delivery at hand, so they live in the orchestrator. Freshness also runs on a daily schedule, to notice the case where nothing arrives and so nothing runs.
+
+### Alerts
+
+An error means the run stopped and somebody has to act. A warning means the run went on and somebody should look. dbt tests with `severity: warn` raise no alert: they count source problems the staging models already repair or reject, so they warn on every run by design. The drift check is what notices when one of those counts changes.
+
+Alerts are written to `data/alerts/alerts.jsonl`, one JSON object per line, which needs no account and no secret:
+
+```json
+{
+  "alert_id": "ea61186a9b18",
+  "raised_at": "2026-11-22T00:06:45Z",
+  "severity": "error",
+  "source": "landing/delivery: row_counts_match_control_file",
+  "summary": "Row count differs from the control file: core_banking/transactions/transactions_2026-02.csv: control file says 75,779 rows, the file has 37,889",
+  "problems": ["core_banking/transactions/transactions_2026-02.csv: control file says 75,779 rows, the file has 37,889"],
+  "job": "process_delivery",
+  "run_id": "45ee5503-e596-4cc2-a556-9307f5d22414"
+}
+```
+
+To send them to a chat tool as well, set `ALERT_WEBHOOK_URL` in the environment before starting the pipeline. Each new alert is posted there as `{"text": "..."}`, the format Slack incoming webhooks accept. A run is evaluated once: looking at the same run again never repeats an alert.
+
+When a dbt test fails, the alert carries the explanation written in the dbt project: the test's description, or the comment that opens a singular test and says where to look.
+
+### How the load works
+
+`ingest/load_raw.py` keeps a ledger, `raw_meta.loaded_files`, with the content hash and row count of every file it has loaded. A file is loaded when it is not in the ledger or its hash changed, and a file loaded again replaces its own rows, all in one transaction. Running the pipeline twice changes nothing, and a corrected file needs no special handling. `make build` still replaces the raw tables from scratch.
+
+Only the raw layer is incremental. dbt rebuilds every model on each run: it takes seconds at this volume, and because transactions arrive late and files are restated, a rebuild is the simple way to stay correct.
 
 ## Design choices
 
 DuckDB keeps the project free to run and easy to clone: the warehouse is one local file and there is nothing to sign up for. The sources are ordinary tables in raw schemas, as they would be in a cloud warehouse.
 
-The generator is deterministic. The same seed always produces the same files. Extending the end month adds new monthly files and leaves the earlier ones as they were; only the customer and account snapshots are replaced, as snapshots are. That makes results reproducible and lets a scheduled run load one new month at a time.
+The generator is deterministic. The same seed always produces the same files. Extending the end month adds new monthly files and leaves the transactions and balances of earlier months as they were. The snapshots (customers, accounts, funds transfer rates) and the current year's finance files are replaced, and the latest fees file is sent again with a few references completed. That makes results reproducible and lets the pipeline load one new month at a time.
 
 Reference data that changes rarely and is maintained by hand lives in dbt seeds: the channel mapping and the unit costs used for cost to serve.
+
+Dagster was chosen as the orchestrator because it reads the dbt project directly: every model becomes an asset and every dbt test a check, with no code to keep in sync. It also runs from the same environment as dbt with one command and no service to set up.
+
+The unit of work is a delivery, not a monthly partition. A delivery is whatever is in the landing folder and not yet loaded, tracked file by file in the ledger. The first load of three years and the arrival of one month go through the same job, and a month does not have to arrive alone or on time.
+
+The sensor waits for the control file, which the generator writes last, so it never picks up a delivery that is still being written. Each run is keyed by the content of the files it would load. A delivery that failed its checks is not retried every 30 seconds; it runs again when one of its files changes.
+
+Runs are queued one at a time and their steps execute in a single process, because DuckDB accepts one writing process at a time.
 
 ## Project structure
 
 ```
 generator/     synthetic data generator and its tests
 ingest/        loads the CSV files into DuckDB as text
+  contract.py        what each feed delivers: cadence, file names, columns
+  delivery.py        what is new in the landing folder, and the checks on it
+  ledger.py          record of every file loaded
+  load_raw.py        full refresh and incremental load
+orchestration/ Dagster project
+  assets.py          delivery, raw tables and the two dbt steps
+  checks.py          source freshness and rejection rate drift
+  alerts.py          what raises an alert and where it goes
+  automation.py      jobs, the delivery sensor, the alert sensors, the schedule
+  run_once.py        one pipeline run without the UI
+  demo.py            the two demos
 transform/     dbt project
   models/
     staging/         one model per source table
@@ -208,7 +359,7 @@ transform/     dbt project
   seeds/       channel mapping and unit costs
   macros/      cleaning helpers and schema naming
   tests/       singular tests
-data/          generated files and the local warehouse (not committed)
+data/          generated files, the local warehouse, run history and alerts (not committed)
 ```
 
 Generator options, for a larger dataset or a different period:
@@ -219,7 +370,6 @@ uv run python -m generator --help
 
 ## Next steps
 
-- Orchestration: scheduled monthly loads with data quality checks and alerting.
 - A Model Context Protocol (MCP) server that lets a language model answer questions using only these marts and their documentation, with an evaluation of answer accuracy.
 
 ## License

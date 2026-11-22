@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import dagster as dg
 
 from ingest.delivery import Delivery, plan_delivery
-from orchestration.alerts import Alert, notify_run
+from orchestration.alerts import Alert, notify_run, run_events
 from orchestration.automation import delivery_job
 from orchestration.definitions import defs
 from orchestration.paths import paths
@@ -76,17 +76,6 @@ def get_instance() -> dg.DagsterInstance:
     return dg.DagsterInstance.ephemeral()
 
 
-def _events(instance: dg.DagsterInstance, run_id: str, event_type: dg.DagsterEventType) -> list:
-    records = []
-    cursor = None
-    while True:
-        page = instance.get_records_for_run(run_id, cursor=cursor, of_type=event_type, limit=500)
-        records += [record.event_log_entry.dagster_event for record in page.records]
-        if not page.has_more:
-            return records
-        cursor = page.cursor
-
-
 def process_pending(instance: dg.DagsterInstance, verbose: bool = False) -> RunOutcome:
     locations = paths()
     plan = plan_delivery(locations.raw_dir, locations.warehouse)
@@ -111,8 +100,8 @@ def process_pending(instance: dg.DagsterInstance, verbose: bool = False) -> RunO
     seconds = time.monotonic() - started
     run_id = result.run_id
 
-    succeeded = {e.step_key for e in _events(instance, run_id, dg.DagsterEventType.STEP_SUCCESS)}
-    failed = {e.step_key for e in _events(instance, run_id, dg.DagsterEventType.STEP_FAILURE)}
+    succeeded = {e.step_key for e in run_events(instance, run_id, dg.DagsterEventType.STEP_SUCCESS)}
+    failed = {e.step_key for e in run_events(instance, run_id, dg.DagsterEventType.STEP_FAILURE)}
     steps = {
         node.name: "failed"
         if node.name in failed
@@ -124,7 +113,7 @@ def process_pending(instance: dg.DagsterInstance, verbose: bool = False) -> RunO
 
     evaluations = [
         event.event_specific_data
-        for event in _events(instance, run_id, dg.DagsterEventType.ASSET_CHECK_EVALUATION)
+        for event in run_events(instance, run_id, dg.DagsterEventType.ASSET_CHECK_EVALUATION)
     ]
     not_passed = [e for e in evaluations if not e.passed]
     warned = sum(e.severity == dg.AssetCheckSeverity.WARN for e in not_passed)

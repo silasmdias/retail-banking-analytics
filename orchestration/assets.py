@@ -105,6 +105,19 @@ def raw_key(feed: Feed) -> dg.AssetKey:
     return dg.AssetKey([feed.system, feed.table])
 
 
+def _fingerprint_checked_in(context: dg.AssetExecutionContext) -> str | None:
+    """Fingerprint of the delivery this run checked, or None if it checked none.
+
+    The load only accepts the exact files that passed the checks: not a file
+    that changed in between, and not a load started on its own.
+    """
+    event = context.instance.get_latest_materialization_event(DELIVERY_KEY)
+    if event is None or event.run_id != context.run.run_id or event.asset_materialization is None:
+        return None
+    fingerprint = event.asset_materialization.metadata.get("fingerprint")
+    return str(fingerprint.value) if fingerprint else None
+
+
 def _load_check(feed: Feed, entries: list[LedgerEntry]) -> dg.AssetCheckResult:
     mismatches = [
         f"{entry.relative_path}: the file has {entry.file_rows:,} rows, "
@@ -154,7 +167,16 @@ def _load_check(feed: Feed, entries: list[LedgerEntry]) -> dg.AssetCheckResult:
 def raw_tables(context: dg.AssetExecutionContext) -> Iterator[Any]:
     locations = paths()
     plan = plan_delivery(locations.raw_dir, locations.warehouse)
-    entries = load_delivery(plan, locations.warehouse, load_id=context.run_id)
+    checked = _fingerprint_checked_in(context)
+    if checked != plan.fingerprint:
+        raise dg.Failure(
+            description=(
+                "The files in the landing folder are not the ones this run checked. "
+                "Nothing was loaded. Run the whole job again so the delivery is checked first."
+            ),
+            metadata={"checked": checked or "nothing", "found": plan.fingerprint},
+        )
+    entries = load_delivery(plan, locations.warehouse, load_id=context.run.run_id)
     context.log.info(f"Loaded {len(entries)} files ({sum(e.loaded_rows for e in entries):,} rows)")
 
     with duckdb.connect(str(locations.warehouse), read_only=True) as connection:

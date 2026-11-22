@@ -7,8 +7,16 @@ import json
 import dagster as dg
 
 from ingest.delivery import plan_delivery
+from ingest.ledger import read_ledger
 from ingest.load_raw import load_delivery
-from orchestration.assets import dbt_build_marts, dbt_project, dbt_validate_inputs
+from orchestration import assets
+from orchestration.assets import (
+    dbt_build_marts,
+    dbt_project,
+    dbt_validate_inputs,
+    delivery,
+    raw_tables,
+)
 from orchestration.automation import delivery_job, new_delivery_sensor
 from orchestration.definitions import defs
 from orchestration.tests.conftest import deliver
@@ -83,3 +91,44 @@ def test_the_sensor_asks_for_one_run_per_delivery_and_none_when_all_is_loaded(wo
     deliver(workspace.raw_dir, (2023, 5))
     second = new_delivery_sensor()
     assert isinstance(second, dg.RunRequest) and second.run_key != first.run_key
+
+
+def loaded_files(workspace) -> int:
+    return len(read_ledger(workspace.warehouse))
+
+
+def test_the_load_takes_only_the_files_that_were_checked(workspace):
+    deliver(workspace.raw_dir, (2023, 4))
+    result = dg.materialize([delivery, raw_tables], raise_on_error=False)
+    assert result.success
+    assert loaded_files(workspace) == len(
+        plan_delivery(workspace.raw_dir, workspace.warehouse).landed
+    )
+
+
+def test_the_load_refuses_to_start_without_a_checked_delivery(workspace):
+    deliver(workspace.raw_dir, (2023, 4))
+    result = dg.materialize([raw_tables], raise_on_error=False)
+    assert not result.success
+    assert loaded_files(workspace) == 0
+
+
+def test_the_load_refuses_files_that_changed_after_the_check(workspace, monkeypatch):
+    deliver(workspace.raw_dir, (2023, 4))
+    april = workspace.raw_dir / "core_banking" / "fees" / "fees_2023-04.csv"
+    calls = []
+
+    def plan_then_tamper(raw_dir, database):
+        """The first call is the check. Before the second, the load, a file is replaced."""
+        if calls:
+            april.write_text(
+                april.read_text() + "FEE-LATE,ACC-000001-01,,overdraft,2023-04-30,34.00,posted\n"
+            )
+        calls.append(1)
+        return plan_delivery(raw_dir, database)
+
+    monkeypatch.setattr(assets, "plan_delivery", plan_then_tamper)
+    result = dg.materialize([delivery, raw_tables], raise_on_error=False)
+    assert not result.success
+    assert len(calls) == 2
+    assert loaded_files(workspace) == 0

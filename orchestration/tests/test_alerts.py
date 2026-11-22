@@ -6,7 +6,16 @@ import json
 
 import pytest
 
-from orchestration.alerts import ALERTS_FILE, ERROR, WARNING, Alert, _post, dbt_test_note, deliver
+from orchestration.alerts import (
+    ALERTS_FILE,
+    ERROR,
+    WARNING,
+    Alert,
+    _post,
+    dbt_test_note,
+    deliver,
+    root_cause,
+)
 
 
 def alert(alert_id: str = "a1", severity: str = ERROR, problems: tuple[str, ...] = ()) -> Alert:
@@ -104,3 +113,32 @@ def test_a_dbt_test_is_explained_in_the_words_of_the_dbt_project():
     assert singular.startswith("Actual revenue in the budget report must equal revenue")
     assert "Debug:" in singular and "dagster" not in singular
     assert dbt_test_note("test.retail_banking.does_not_exist") == ""
+
+
+class FakeError:
+    def __init__(self, message: str, cause: FakeError | None = None) -> None:
+        self.message = message
+        self.cause = cause
+
+
+class FakeFailure:
+    def __init__(self, error: FakeError | None) -> None:
+        self.error = error
+
+
+def test_a_failed_step_is_reported_by_its_innermost_error():
+    wrapped = FakeError("Error occurred while executing op", FakeError("KeyError: 'amount'\n"))
+    assert root_cause(FakeFailure(wrapped)) == "KeyError: 'amount'"
+    assert root_cause(FakeFailure(None)) == "The step failed without a message."
+
+
+def test_a_dbt_failure_is_reported_in_the_words_of_dbt():
+    message = (
+        "The dbt CLI process with command\n\n`dbt build --select marts`\n\n"
+        "failed with exit code `1`. Check the stdout in the Dagster compute logs.\n\n"
+        "Errors parsed from dbt logs:\n\n"
+        'Database Error in model dim_products\n  column "interchange" does not exist'
+    )
+    assert root_cause(FakeFailure(FakeError("wrapper", FakeError(message)))) == (
+        'dbt reported: Database Error in model dim_products column "interchange" does not exist'
+    )

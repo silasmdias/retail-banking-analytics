@@ -98,9 +98,10 @@ def _alert(severity: str, source: str, summary: str, problems: Iterable[str], ru
     )
 
 
-def _events(
+def run_events(
     instance: dg.DagsterInstance, run_id: str, event_type: dg.DagsterEventType
 ) -> Iterator[Any]:
+    """Every event of one type that a run recorded, oldest first."""
     cursor = None
     while True:
         page = instance.get_records_for_run(run_id, cursor=cursor, of_type=event_type, limit=500)
@@ -127,7 +128,9 @@ def _check_alert(evaluation: Any, run: Any) -> Alert | None:
     summary = evaluation.description
     if not summary and key in _DBT_CHECKS:
         failed_rows = _plain(evaluation.metadata.get("dagster_dbt/failed_row_count"))
-        rows = "" if failed_rows is None else f" on {failed_rows:,} row{'s'[: failed_rows != 1]}"
+        rows = ""
+        if failed_rows is not None:
+            rows = f" on {failed_rows:,} {'row' if failed_rows == 1 else 'rows'}"
         note = dbt_test_note(_plain(evaluation.metadata.get("unique_id")))
         summary = f"The dbt test failed{rows}. {note}".strip()
     return _alert(
@@ -139,13 +142,24 @@ def _check_alert(evaluation: Any, run: Any) -> Alert | None:
     )
 
 
-def _root_cause(failure: Any) -> str:
-    """First line of the innermost error: Dagster wraps the real one in its own."""
+DBT_ERRORS_MARKER = "Errors parsed from dbt logs:"
+
+
+def root_cause(failure: Any) -> str:
+    """The innermost error of a failed step, in one line.
+
+    Dagster wraps the real error in its own. For a dbt failure the useful part
+    is what dbt itself reported, which dagster-dbt appends after a marker.
+    """
     error = failure.error
     while error is not None and error.cause is not None:
         error = error.cause
     message = (error.message if error else "").strip()
-    return message.splitlines()[0][:500] if message else "The step failed without a message."
+    if not message:
+        return "The step failed without a message."
+    if DBT_ERRORS_MARKER in message:
+        message = "dbt reported: " + message.split(DBT_ERRORS_MARKER, 1)[1]
+    return " ".join(message.split())[:500]
 
 
 def alerts_for_run(instance: dg.DagsterInstance, run_id: str) -> list[Alert]:
@@ -156,18 +170,18 @@ def alerts_for_run(instance: dg.DagsterInstance, run_id: str) -> list[Alert]:
 
     alerts = []
     steps_explained = set()
-    for event in _events(instance, run_id, dg.DagsterEventType.ASSET_CHECK_EVALUATION):
+    for event in run_events(instance, run_id, dg.DagsterEventType.ASSET_CHECK_EVALUATION):
         alert = _check_alert(event.event_specific_data, run)
         if alert:
             alerts.append(alert)
             if alert.severity == ERROR:
                 steps_explained.add(event.step_key)
 
-    for event in _events(instance, run_id, dg.DagsterEventType.STEP_FAILURE):
+    for event in run_events(instance, run_id, dg.DagsterEventType.STEP_FAILURE):
         if event.step_key in steps_explained:
             continue
         alerts.append(
-            _alert(ERROR, f"step {event.step_key}", _root_cause(event.event_specific_data), (), run)
+            _alert(ERROR, f"step {event.step_key}", root_cause(event.event_specific_data), (), run)
         )
 
     if run.status == dg.DagsterRunStatus.FAILURE and not any(a.severity == ERROR for a in alerts):
